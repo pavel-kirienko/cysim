@@ -154,19 +154,7 @@ function fnv1a64(s: string): bigint {
   return h;
 }
 
-/** Parse hash override suffix like "sensors/temperature#1a2b" (matching cy.c:1302-1332). */
-function parseHashOverride(name: string): bigint | null {
-  const idx = name.lastIndexOf("#");
-  if (idx < 0 || idx === name.length - 1) return null;
-  const hexPart = name.slice(idx + 1);
-  if (hexPart.length > 16) return null;
-  if (!/^[0-9a-f]+$/.test(hexPart)) return null;
-  return BigInt("0x" + hexPart);
-}
-
 export function topicHash(name: string): bigint {
-  const override = parseHashOverride(name);
-  if (override !== null) return override;
   return fnv1a64(name);
 }
 
@@ -275,10 +263,15 @@ export class Simulation {
     if (node) node.partitionSet = set;
   }
 
-  addTopicToNode(nodeId: number, name?: string): Topic | null {
+  /** Create a topic on a node. If targetSid is given, generate a name whose preferred
+   *  subject-ID (at evictions=0) equals targetSid — useful for provoking collisions. */
+  addTopicToNode(nodeId: number, targetSid?: number): Topic | null {
     const node = this.nodes.get(nodeId);
     if (!node) return null;
-    if (name === undefined) {
+    let name: string;
+    if (targetSid !== undefined) {
+      name = this.findNameForSid(targetSid);
+    } else {
       name = "topic/" + String.fromCharCode(this.nextAutoTopicChar);
       this.nextAutoTopicChar++;
       if (this.nextAutoTopicChar > 122) this.nextAutoTopicChar = 97; // wrap
@@ -291,6 +284,23 @@ export class Simulation {
       node.gossipUrgent.push(hash);
     }
     return topic;
+  }
+
+  /** Generate a random topic name whose preferred subject-ID at evictions=0 equals targetSid. */
+  private findNameForSid(targetSid: number): string {
+    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const prefix = "topic/";
+    for (;;) {
+      let suffix = "";
+      for (let i = 0; i < 12; i++) {
+        suffix += alphabet[this.rng.randrange(alphabet.length)];
+      }
+      const name = prefix + suffix;
+      const hash = topicHash(name);
+      if (subjectId(hash, 0, SUBJECT_ID_MODULUS) === targetSid) {
+        return name;
+      }
+    }
   }
 
   destroyTopicOnNode(nodeId: number, hash: bigint): void {
@@ -340,35 +350,55 @@ export class Simulation {
     return result;
   }
 
+  /** Converged = no two different topics across online nodes (same partition) share a subject-ID,
+   *  and any topic hash present on multiple nodes has the same eviction count. */
   checkConvergence(): boolean {
-    const online = this.onlineNodes();
-    if (online.length < 2) return true;
-    const ref = this.topicSidMap(online[0]);
-    for (let i = 1; i < online.length; i++) {
-      const m = this.topicSidMap(online[i]);
-      if (m.size !== ref.size) return false;
-      for (const [k, v] of ref) {
-        if (m.get(k) !== v) return false;
-      }
-    }
-    return true;
+    return this.checkConvergenceImpl(
+      this.onlineNodes().map(n => ({
+        partition: n.partitionSet,
+        topics: [...n.topics.values()].map(t => ({
+          hash: t.hash, subjectId: topicSubjectId(t), evictions: t.evictions,
+        })),
+      })),
+    );
   }
 
   checkConvergenceFromSnaps(snaps: Map<number, NodeSnapshot>): boolean {
-    const sidMaps: Map<bigint, number>[] = [];
+    const nodes: { partition: string; topics: { hash: bigint; subjectId: number; evictions: number }[] }[] = [];
     for (const s of snaps.values()) {
       if (!s.online) continue;
-      const m = new Map<bigint, number>();
-      for (const t of s.topics) m.set(t.hash, t.subjectId);
-      sidMaps.push(m);
+      nodes.push({
+        partition: s.partitionSet,
+        topics: s.topics.map(t => ({ hash: t.hash, subjectId: t.subjectId, evictions: t.evictions })),
+      });
     }
-    if (sidMaps.length < 2) return true;
-    const ref = sidMaps[0];
-    for (let i = 1; i < sidMaps.length; i++) {
-      const m = sidMaps[i];
-      if (m.size !== ref.size) return false;
-      for (const [k, v] of ref) {
-        if (m.get(k) !== v) return false;
+    return this.checkConvergenceImpl(nodes);
+  }
+
+  private checkConvergenceImpl(
+    nodes: { partition: string; topics: { hash: bigint; subjectId: number; evictions: number }[] }[],
+  ): boolean {
+    // Group by partition
+    const byPartition = new Map<string, typeof nodes>();
+    for (const n of nodes) {
+      let group = byPartition.get(n.partition);
+      if (!group) { group = []; byPartition.set(n.partition, group); }
+      group.push(n);
+    }
+    for (const group of byPartition.values()) {
+      // Collect all (subjectId -> topicHash) — if same SID maps to different hashes, that's a collision
+      const sidToHash = new Map<number, bigint>();
+      // Also check same hash has same evictions across nodes
+      const hashToEvictions = new Map<bigint, number>();
+      for (const n of group) {
+        for (const t of n.topics) {
+          const existing = sidToHash.get(t.subjectId);
+          if (existing !== undefined && existing !== t.hash) return false; // SID collision
+          sidToHash.set(t.subjectId, t.hash);
+          const existingEv = hashToEvictions.get(t.hash);
+          if (existingEv !== undefined && existingEv !== t.evictions) return false; // divergence
+          hashToEvictions.set(t.hash, t.evictions);
+        }
       }
     }
     return true;
@@ -632,18 +662,8 @@ export class Simulation {
         );
       }
     } else {
-      // Unknown topic — check for subject-ID collision
+      // Unknown topic — only check for subject-ID collision (nodes never learn foreign topics)
       const localWon = this.onGossipUnknownTopic(node, hash, evictions, lage, pushLog);
-      if (!localWon && name) {
-        const newTopic: Topic = {
-          name, hash, evictions, tsCreatedUs: this.tsFromLage(lage),
-        };
-        nodeAddTopic(node, newTopic);
-        pushLog({
-          timeUs: this.nowUs, event: "learned", src: srcId, dst: dstId,
-          topicHash: hash, details: { name, evictions },
-        });
-      }
       if (shouldForward && !localWon) {
         this.epidemicForward(node, srcId, hash, evictions, lage, name, ttl, pushLog);
       }

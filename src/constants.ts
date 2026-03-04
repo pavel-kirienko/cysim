@@ -22,4 +22,5 @@ export const LAGE_MAX            = 35;
 // ---------------------------------------------------------------------------
 
 export const MSG_PERSIST_US      = 600_000;          // 600 ms
+export const BROADCAST_PERSIST_US = 800_000;         // 800 ms — expanding circle
 export const CONFLICT_FLASH_US   = 400_000;          // 400 ms

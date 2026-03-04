@@ -5,15 +5,12 @@
 import { NodeSnapshot } from "./types.js";
 import { Simulation } from "./sim.js";
 import { Renderer } from "./render.js";
-import {
-  GOSSIP_PEER_ELIGIBLE,
-} from "./constants.js";
 
-// Colors for legend (matching render.ts / viz.py)
+// Colors for legend
 const C_ONLINE    = "#d5e8d4";
 const C_CONFLICT  = "#f8cecc";
 const C_OFFLINE   = "#555555";
-const C_BROADCAST = "#888888";
+const C_BROADCAST = "#f1c40f";
 const C_UNICAST   = "#e67e22";
 const C_FORWARD   = "#9b59b6";
 const C_PEER_FRESH = "#27ae60";
@@ -45,6 +42,7 @@ export class UI {
   // Callbacks
   onRewind: (() => void) | null = null;
   onRelayout: (() => void) | null = null;
+  onStepCallback: (() => void) | null = null;
 
   constructor(
     sim: Simulation,
@@ -72,7 +70,6 @@ export class UI {
     this.stepBtn = this.btn("Step", "⏭ Step");
     this.stepBtn.addEventListener("click", () => {
       if (!this.playing) {
-        // Single step: advance 3s sim time
         this.onStepCallback?.();
       }
     });
@@ -129,8 +126,6 @@ export class UI {
     );
   }
 
-  onStepCallback: (() => void) | null = null;
-
   private buildSidePanel(panel: HTMLElement): void {
     // Legend
     const legendTitle = document.createElement("div");
@@ -141,14 +136,14 @@ export class UI {
     panel.appendChild(legendTitle);
 
     const legendItems: [string, string, string][] = [
-      [C_ONLINE,    "box",  "Node online"],
-      [C_CONFLICT,  "box",  "Node in conflict"],
-      [C_OFFLINE,   "box",  "Node offline"],
-      [C_BROADCAST, "line", "Broadcast gossip"],
-      [C_UNICAST,   "line", "Unicast epidemic"],
-      [C_FORWARD,   "dash", "Epidemic forward"],
-      [C_PEER_FRESH,"dot",  "Peer (fresh)"],
-      [C_PEER_STALE,"dot",  "Peer (stale)"],
+      [C_ONLINE,    "box",    "Node online"],
+      [C_CONFLICT,  "box",    "Node in conflict"],
+      [C_OFFLINE,   "box",    "Node offline"],
+      [C_BROADCAST, "circle", "Broadcast gossip"],
+      [C_UNICAST,   "line",   "Unicast epidemic"],
+      [C_FORWARD,   "dash",   "Epidemic forward"],
+      [C_PEER_FRESH,"dot",    "Peer (fresh)"],
+      [C_PEER_STALE,"dot",    "Peer (stale)"],
     ];
 
     for (const [color, kind, label] of legendItems) {
@@ -168,6 +163,11 @@ export class UI {
         swatch.style.background = color;
         swatch.style.border = "1px solid #888";
         swatch.style.borderRadius = "2px";
+      } else if (kind === "circle") {
+        swatch.style.width = "14px";
+        swatch.style.height = "14px";
+        swatch.style.border = `2px solid ${color}`;
+        swatch.style.borderRadius = "50%";
       } else if (kind === "line" || kind === "dash") {
         swatch.style.width = "20px";
         swatch.style.height = "0px";
@@ -212,7 +212,7 @@ export class UI {
     this.convergenceDisplay.style.color = conv ? C_CONVERGED : C_DIVERGED;
 
     // Event counts
-    const types = ["broadcast", "unicast", "forward", "conflict", "resolved", "learned", "join"];
+    const types = ["broadcast", "unicast", "forward", "conflict", "resolved", "join"];
     const lines = types.map(t => {
       const c = this.sim.eventCounts[t] || 0;
       return `${t.padEnd(12)} ${c}`;
@@ -250,10 +250,10 @@ export class UI {
       el.style.left = (pos.x - 105) + "px";
       el.style.top = (pos.y + boxH / 2 + 4) + "px";
 
-      // Update partition button color
+      // Update partition button
       const partBtn = el.querySelector(".part-btn") as HTMLButtonElement;
       if (partBtn) {
-        partBtn.textContent = `[${snap.partitionSet}]`;
+        partBtn.textContent = `partition ${snap.partitionSet}`;
         partBtn.style.background = snap.partitionSet === "A" ? "#3498db" : "#e67e22";
       }
 
@@ -272,7 +272,7 @@ export class UI {
     el.style.maxWidth = "210px";
     el.style.justifyContent = "center";
 
-    const partBtn = this.miniBtn(`[A]`, "part-btn");
+    const partBtn = this.miniBtn("partition A", "part-btn");
     partBtn.style.background = "#3498db";
     partBtn.addEventListener("click", () => {
       const node = this.sim.nodes.get(nodeId);
@@ -299,8 +299,17 @@ export class UI {
     const addTopicBtn = this.miniBtn("+Topic");
     addTopicBtn.style.background = "#2980b9";
     addTopicBtn.addEventListener("click", () => {
-      const name = window.prompt("Topic name (leave empty for auto):", "") || undefined;
-      this.sim.addTopicToNode(nodeId, name === "" ? undefined : name);
+      this.sim.addTopicToNode(nodeId);
+    });
+
+    const collideBtn = this.miniBtn("+Collide");
+    collideBtn.style.background = "#8e44ad";
+    collideBtn.addEventListener("click", () => {
+      const input = window.prompt("Target subject-ID (decimal) to collide with:", "");
+      if (input === null || input === "") return;
+      const sid = parseInt(input, 10);
+      if (isNaN(sid) || sid < 0) return;
+      this.sim.addTopicToNode(nodeId, sid);
     });
 
     const topicContainer = document.createElement("div");
@@ -311,16 +320,15 @@ export class UI {
     topicContainer.style.width = "100%";
     topicContainer.style.justifyContent = "center";
 
-    el.append(partBtn, restartBtn, destroyBtn, addTopicBtn, topicContainer);
+    el.append(partBtn, restartBtn, destroyBtn, addTopicBtn, collideBtn, topicContainer);
     return el;
   }
 
   private syncTopicButtons(el: HTMLElement, nodeId: number, snap: NodeSnapshot): void {
     const container = el.querySelector(".topic-btns")!;
-    // Rebuild each frame (simple approach, topics are few)
     container.innerHTML = "";
     for (const t of snap.topics) {
-      const btn = this.miniBtn(`×${t.name.slice(0, 8)}`);
+      const btn = this.miniBtn(`\u00d7${t.name.slice(0, 8)}`);
       btn.style.background = "#7f8c8d";
       btn.style.fontSize = "9px";
       btn.addEventListener("click", () => {

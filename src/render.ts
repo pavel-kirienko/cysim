@@ -2,26 +2,25 @@
 // Canvas 2D renderer — port of cysim/viz.py MatplotlibRenderer
 // ---------------------------------------------------------------------------
 
-import { EventRecord, NodeSnapshot, PeerSnap, TopicSnap } from "./types.js";
+import { EventRecord, NodeSnapshot } from "./types.js";
 import {
-  GOSSIP_PEER_ELIGIBLE, GOSSIP_PERIOD,
-  MSG_PERSIST_US, CONFLICT_FLASH_US,
+  GOSSIP_PEER_ELIGIBLE,
+  MSG_PERSIST_US, BROADCAST_PERSIST_US, CONFLICT_FLASH_US,
 } from "./constants.js";
 
-// Colors (matching viz.py)
+// Colors
 const C_BG          = "#1e1e1e";
 const C_ONLINE      = "#d5e8d4";
 const C_OFFLINE     = "#555555";
 const C_CONFLICT    = "#f8cecc";
 const C_BORDER      = "#888888";
-const C_BROADCAST   = "#888888";
+const C_BROADCAST   = "#f1c40f"; // yellow expanding circle
 const C_UNICAST     = "#e67e22";
 const C_FORWARD     = "#9b59b6";
 const C_PEER_FRESH  = "#27ae60";
 const C_PEER_STALE  = "#95a5a6";
 const C_PEER_EMPTY  = "#666666";
 const C_TEXT        = "#e0e0e0";
-const C_HEADER      = "#ffffff";
 const C_SEPARATOR   = "#666666";
 
 const FONT_SIZE     = 11;
@@ -30,9 +29,17 @@ const BOX_WIDTH     = 210;
 const BOX_PAD       = 8;
 const BOX_RADIUS    = 6;
 
-interface ActiveMessage {
+const BROADCAST_MAX_RADIUS = 220; // max expanding circle radius in px
+
+interface ActiveArrow {
   expireUs: number;
   event: EventRecord;
+}
+
+interface ActiveBroadcast {
+  expireUs: number;
+  startUs: number;
+  src: number;
 }
 
 export class Renderer {
@@ -41,7 +48,8 @@ export class Renderer {
   nodePositions: Map<number, { x: number; y: number }> = new Map();
   private nodeBoxSizes: Map<number, { w: number; h: number }> = new Map();
 
-  private activeMessages: ActiveMessage[] = [];
+  private activeArrows: ActiveArrow[] = [];
+  private activeBroadcasts: ActiveBroadcast[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
 
   constructor(canvas: HTMLCanvasElement) {
@@ -78,25 +86,35 @@ export class Renderer {
     ctx.fillStyle = C_BG;
     ctx.fillRect(0, 0, W, H);
 
-    // Update active messages
+    // Ingest new events
     for (const ev of newEvents) {
-      if (ev.event === "broadcast" || ev.event === "unicast" || ev.event === "forward") {
-        this.activeMessages.push({ expireUs: timeUs + MSG_PERSIST_US, event: ev });
+      if (ev.event === "broadcast") {
+        this.activeBroadcasts.push({
+          startUs: timeUs,
+          expireUs: timeUs + BROADCAST_PERSIST_US,
+          src: ev.src,
+        });
+      } else if (ev.event === "unicast" || ev.event === "forward") {
+        this.activeArrows.push({ expireUs: timeUs + MSG_PERSIST_US, event: ev });
       }
       if (ev.event === "conflict") {
         this.activeConflicts.set(ev.src, timeUs + CONFLICT_FLASH_US);
       }
     }
-    this.activeMessages = this.activeMessages.filter(m => m.expireUs > timeUs);
+    this.activeArrows = this.activeArrows.filter(m => m.expireUs > timeUs);
+    this.activeBroadcasts = this.activeBroadcasts.filter(m => m.expireUs > timeUs);
 
-    // Compute node box sizes first (needed for edge points)
+    // Compute node box sizes
     this.nodeBoxSizes.clear();
     for (const [nid, snap] of snaps) {
       this.nodeBoxSizes.set(nid, this.computeBoxSize(snap));
     }
 
-    // Draw message arrows (behind nodes)
-    this.drawMessages(ctx, timeUs, snaps);
+    // Draw broadcast circles (behind everything)
+    this.drawBroadcasts(ctx, timeUs);
+
+    // Draw unicast/forward arrows (behind nodes)
+    this.drawArrows(ctx, timeUs, snaps);
 
     // Draw node boxes
     for (const [nid, snap] of snaps) {
@@ -162,7 +180,7 @@ export class Renderer {
 
     // Row 0: header
     const status = snap.online ? "ONLINE" : "OFFLINE";
-    const partLabel = ` [${snap.partitionSet}]`;
+    const partLabel = ` [partition ${snap.partitionSet}]`;
     putText(`N${snap.nodeId}  ${status}${partLabel}`, { bold: true, size: 12 });
 
     // Row 1: next heartbeat
@@ -184,7 +202,7 @@ export class Renderer {
     putText(`next tx: ${nextTopicName}`);
 
     // Separator
-    putText("─".repeat(26), { color: C_SEPARATOR });
+    putText("\u2500".repeat(26), { color: C_SEPARATOR });
 
     // Topics
     if (snap.topics.length > 0) {
@@ -197,7 +215,7 @@ export class Renderer {
     }
 
     // Separator
-    putText("─".repeat(26), { color: C_SEPARATOR });
+    putText("\u2500".repeat(26), { color: C_SEPARATOR });
 
     // Peers
     putText("peers:", { bold: true });
@@ -214,48 +232,59 @@ export class Renderer {
     }
   }
 
-  private drawMessages(
+  // -- Broadcast circles --
+
+  private drawBroadcasts(ctx: CanvasRenderingContext2D, timeUs: number): void {
+    for (const bc of this.activeBroadcasts) {
+      const srcPos = this.nodePositions.get(bc.src);
+      if (!srcPos) continue;
+
+      const elapsed = timeUs - bc.startUs;
+      const frac = elapsed / BROADCAST_PERSIST_US; // 0→1
+      const radius = 20 + frac * BROADCAST_MAX_RADIUS;
+      const alpha = Math.max(0, 0.5 * (1 - frac));
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = C_BROADCAST;
+      ctx.lineWidth = 2.5 - frac * 1.5;
+      ctx.beginPath();
+      ctx.arc(srcPos.x, srcPos.y, radius, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // -- Unicast/forward arrows --
+
+  private drawArrows(
     ctx: CanvasRenderingContext2D, timeUs: number,
     snaps: Map<number, NodeSnapshot>,
   ): void {
-    for (const msg of this.activeMessages) {
+    for (const msg of this.activeArrows) {
       const ev = msg.event;
       const ageFrac = 1.0 - (msg.expireUs - timeUs) / MSG_PERSIST_US;
       const alpha = Math.max(0.15, 0.9 - 0.75 * ageFrac);
 
       let color: string, lineWidth: number, dashed: boolean;
-      if (ev.event === "broadcast") {
-        color = C_BROADCAST; lineWidth = 0.8; dashed = false;
-      } else if (ev.event === "unicast") {
+      if (ev.event === "unicast") {
         color = C_UNICAST; lineWidth = 2.0; dashed = false;
       } else {
         color = C_FORWARD; lineWidth = 1.5; dashed = true;
       }
 
       const srcPos = this.nodePositions.get(ev.src);
-      if (!srcPos) continue;
+      if (!srcPos || ev.dst === null) continue;
 
-      const dsts: number[] = [];
-      if (ev.dst !== null) {
-        dsts.push(ev.dst);
-      } else {
-        // Broadcast — draw to all other nodes
-        for (const nid of snaps.keys()) {
-          if (nid !== ev.src) dsts.push(nid);
-        }
-      }
+      const dstPos = this.nodePositions.get(ev.dst);
+      if (!dstPos) continue;
 
-      for (const did of dsts) {
-        const dstPos = this.nodePositions.get(did);
-        if (!dstPos) continue;
+      const srcBox = this.nodeBoxSizes.get(ev.src) || { w: BOX_WIDTH, h: 100 };
+      const dstBox = this.nodeBoxSizes.get(ev.dst) || { w: BOX_WIDTH, h: 100 };
+      const [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
+      const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
 
-        const srcBox = this.nodeBoxSizes.get(ev.src) || { w: BOX_WIDTH, h: 100 };
-        const dstBox = this.nodeBoxSizes.get(did) || { w: BOX_WIDTH, h: 100 };
-        const [x0, y0] = this.edgePoint(srcPos.x, srcPos.y, srcBox.w, srcBox.h, dstPos.x, dstPos.y);
-        const [x1, y1] = this.edgePoint(dstPos.x, dstPos.y, dstBox.w, dstBox.h, srcPos.x, srcPos.y);
-
-        this.drawArrow(ctx, x0, y0, x1, y1, color, lineWidth, alpha, dashed);
-      }
+      this.drawArrow(ctx, x0, y0, x1, y1, color, lineWidth, alpha, dashed);
     }
   }
 
@@ -299,7 +328,6 @@ export class Renderer {
 
     // Arrowhead
     const headLen = 8;
-    // Tangent at endpoint of quadratic bezier: derivative at t=1 is 2*(P1-CP)
     const tdx = x1 - cpx, tdy = y1 - cpy;
     const tlen = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
     const ux = tdx / tlen, uy = tdy / tlen;
