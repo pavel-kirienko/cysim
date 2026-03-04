@@ -213,7 +213,7 @@ export class Renderer {
     putText("\u2500".repeat(32), { color: C_SEPARATOR });
 
     // Topic table header
-    putText("topic name   subject-ID  evict", { bold: true });
+    putText("topic name    subject  evict", { bold: true });
 
     // Topics
     if (snap.topics.length > 0) {

@@ -573,8 +573,10 @@ export class Simulation {
     if (!node.online) return;
 
     let hash: bigint | null = null;
+    let fromUrgent = false;
     if (node.gossipUrgent.length > 0) {
       hash = node.gossipUrgent.shift()!;
+      fromUrgent = true;
     } else if (node.gossipQueue.length > 0) {
       hash = node.gossipQueue[0];
       // rotate(-1): move front to back
@@ -585,7 +587,7 @@ export class Simulation {
       const topic = node.topics.get(hash)!;
       const lage = topicLage(topic.tsCreatedUs, this.nowUs);
 
-      if (node.gossipUrgent.includes(hash)) {
+      if (fromUrgent) {
         // Was urgent — send unicast epidemic to peers
         const blacklist = new Set<number>();
         for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
