@@ -8,19 +8,10 @@ This is a simple script that simulates the behavior of Cyphal v1.1 networks, spe
 
 ## Usage
 
-Requires Node.js (for `npx`). From the repo root:
+Requires Node.js (for `npx`):
 
 ```bash
-cd cysim
 npm install
 ./build.sh
-```
-
-Open `cysim/index.html` in a browser. No server needed — it's a static page.
-
-```bash
-xdg-open cysim/index.html   # GNU/Linux
-open cysim/index.html       # macOS
-start cysim/index.html      # Windows
-npx serve cysim             # Or just serve locally if you prefer
+python3 -m http.server 8080
 ```
