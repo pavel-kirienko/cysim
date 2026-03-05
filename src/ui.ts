@@ -42,7 +42,7 @@ export class UI {
   private seedInput!: HTMLInputElement;
 
   // State
-  playing = false;
+  playing = true;
   speedMultiplier = 0.1;
 
   // Callbacks
@@ -65,6 +65,26 @@ export class UI {
     this.buildTopBar(topBar);
     this.buildSidePanel(sidePanel);
     this.initTopicPanelResize();
+
+    if (window.innerWidth < 1500) {
+      const overlay = document.createElement("div");
+      overlay.style.cssText =
+        "position:fixed;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;z-index:9999";
+      const box = document.createElement("div");
+      box.style.cssText =
+        "background:#2a2a2a;border:1px solid #555;border-radius:8px;padding:24px 32px;max-width:360px;text-align:center;color:#e0e0e0;font-family:inherit";
+      box.innerHTML =
+        '<div style="font-size:14px;font-weight:bold;margin-bottom:12px">Desktop recommended</div>' +
+        '<div style="font-size:12px;margin-bottom:18px;color:#bbb">This simulator is designed for desktop and tablet screens. The experience on smaller screens may be suboptimal.</div>';
+      const btn = document.createElement("button");
+      btn.textContent = "Got it";
+      btn.style.cssText =
+        "background:#444;color:#e0e0e0;border:1px solid #666;border-radius:4px;padding:6px 20px;cursor:pointer;font-family:inherit;font-size:12px";
+      btn.onclick = () => overlay.remove();
+      box.appendChild(btn);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+    }
   }
 
   /** Replace the simulation reference (used on seed reset). Clears all overlays. */
@@ -219,6 +239,13 @@ export class UI {
   }
 
   private buildSidePanel(panel: HTMLElement): void {
+    // Logo
+    const logo = document.createElement("img");
+    logo.src = "static/opencyphal-dark.png";
+    logo.style.width = "100%";
+    logo.style.marginBottom = "12px";
+    panel.appendChild(logo);
+
     // Legend
     const legendTitle = document.createElement("div");
     legendTitle.textContent = "Legend";
