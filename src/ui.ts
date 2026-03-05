@@ -33,6 +33,7 @@ export class UI {
   private speedLabel!: HTMLSpanElement;
   private addNodeBtn!: HTMLButtonElement;
   private timeDisplay!: HTMLSpanElement;
+  private historyDisplay!: HTMLSpanElement;
   private convergenceDisplay!: HTMLSpanElement;
   private eventCountsEl!: HTMLElement;
   private seedInput!: HTMLInputElement;
@@ -75,9 +76,17 @@ export class UI {
 
   private buildTopBar(bar: HTMLElement): void {
     this.playBtn = this.btn("Play/Pause", "▶ Play");
-    this.playBtn.addEventListener("click", () => {
+    const togglePlay = () => {
       this.playing = !this.playing;
       this.playBtn.textContent = this.playing ? "⏸ Pause" : "▶ Play";
+    };
+    this.playBtn.addEventListener("click", togglePlay);
+
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !(e.target instanceof HTMLInputElement)) {
+        e.preventDefault();
+        togglePlay();
+      }
     });
 
     this.stepBtn = this.btn("Step", "⏭ Step");
@@ -120,6 +129,11 @@ export class UI {
     this.timeDisplay.style.marginLeft = "12px";
     this.timeDisplay.style.fontWeight = "bold";
 
+    this.historyDisplay = document.createElement("span");
+    this.historyDisplay.style.marginLeft = "12px";
+    this.historyDisplay.style.fontSize = "11px";
+    this.historyDisplay.style.color = "#999";
+
     this.convergenceDisplay = document.createElement("span");
     this.convergenceDisplay.style.marginLeft = "12px";
     this.convergenceDisplay.style.fontWeight = "bold";
@@ -161,7 +175,7 @@ export class UI {
       this.playBtn, this.stepBtn,
       this.sep(), speedGroup,
       this.sep(), this.addNodeBtn,
-      this.sep(), this.timeDisplay, this.convergenceDisplay,
+      this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay,
       this.sep(), seedGroup,
     );
   }
@@ -242,9 +256,15 @@ export class UI {
     panel.appendChild(this.eventCountsEl);
   }
 
-  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>): void {
+  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number): void {
     // Time display
-    this.timeDisplay.textContent = `t = ${(timeUs / 1_000_000).toFixed(2)}s`;
+    this.timeDisplay.textContent = `t = ${(timeUs / 1_000_000).toFixed(3)}s`;
+
+    // History display
+    if (historySize !== undefined && maxTimeUs !== undefined) {
+      const maxT = (maxTimeUs / 1_000_000).toFixed(3);
+      this.historyDisplay.textContent = `${historySize} states | max ${maxT}s`;
+    }
 
     // Convergence
     const conv = this.sim.checkConvergenceFromSnaps(snaps);

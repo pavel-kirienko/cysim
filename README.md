@@ -29,3 +29,10 @@ npm install
 ./build.sh
 python3 -m http.server 8080
 ```
+
+## Testing
+
+```bash
+npm test            # run tests once
+npm run test:watch  # run tests in watch mode
+```

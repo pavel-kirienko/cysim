@@ -60,12 +60,6 @@ function resizeCanvas(): void {
 }
 
 function saveSnapshot(events?: EventRecord[]): void {
-  // Truncate future history if navigated back
-  if (historyIndex < history.length - 1) {
-    history.length = historyIndex + 1;
-    historyTimes.length = historyIndex + 1;
-    eventLog.truncateAfter(historyIndex);
-  }
   history.push(sim.saveState());
   historyTimes.push(sim.nowUs);
   historyIndex = history.length - 1;
@@ -79,6 +73,14 @@ function saveSnapshot(events?: EventRecord[]): void {
 
 /** Single 10ms step. Returns true if events occurred (snapshot saved). */
 function doStep(): boolean {
+  // Truncate future history immediately when stepping from a rewound position
+  if (historyIndex < history.length - 1) {
+    history.length = historyIndex + 1;
+    historyTimes.length = historyIndex + 1;
+    eventLog.truncateAfter(historyIndex);
+    timeline.truncateConvergenceAfter(historyTimes[historyTimes.length - 1] ?? 0);
+    timeline.setHistoryTimes(historyTimes);
+  }
   const newEvents = sim.stepUntil(sim.nowUs + STEP_US);
   if (newEvents.length > 0) {
     saveSnapshot(newEvents);
@@ -100,7 +102,10 @@ function doStepToNextEvent(): void {
 function renderCurrent(events: EventRecord[] = []): void {
   const snaps = sim.snapshot();
   renderer.render(sim.nowUs, snaps, events);
-  ui.updateFrame(sim.nowUs, snaps);
+  const maxTimeUs = historyTimes.length > 0 ? historyTimes[historyTimes.length - 1] : 0;
+  ui.updateFrame(sim.nowUs, snaps, history.length, maxTimeUs);
+  const conv = sim.checkConvergenceFromSnaps(snaps);
+  timeline.recordConvergence(sim.nowUs, conv);
   timeline.render(sim.nowUs);
 }
 
@@ -122,6 +127,7 @@ function resetWithSeed(seed: number): void {
   lastWallTime = null;
   simTimeBudget = 0;
   eventLog.clear();
+  timeline.resetNodeIds();
   timeline.setHistoryTimes(historyTimes);
   timeline.setCurrentIndex(-1);
   relayout();
@@ -130,7 +136,7 @@ function resetWithSeed(seed: number): void {
 
 function tick(wallTime: number): void {
   if (lastWallTime === null) lastWallTime = wallTime;
-  const wallDtMs = wallTime - lastWallTime;
+  const wallDtMs = Math.min(wallTime - lastWallTime, 50); // cap at 50ms to avoid jumps after modal dialogs
   lastWallTime = wallTime;
 
   if (ui.playing) {
@@ -175,6 +181,7 @@ function init(): void {
   ui.setSeedDisplay(sim.seed);
 
   timeline.onNavigate = navigateTo;
+  timeline.isPlaying = () => ui.playing;
 
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);

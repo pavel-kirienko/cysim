@@ -46,16 +46,21 @@ export class Timeline {
 
   private viewStartUs = 0;
   private viewEndUs = 10_000_000; // 10s default
-  private nodeIds: number[] = [];
+  private nodeIds: number[] = [];       // all ever seen, sorted
+  private activeNodeIds = new Set<number>();
+  private convergenceHistory: { timeUs: number; converged: boolean }[] = [];
 
   // Navigation
   onNavigate: ((index: number) => void) | null = null;
+  isPlaying: (() => boolean) | null = null;
   private historyTimes: number[] = [];
   private currentHistoryIndex = 0;
 
   // Interaction state
-  private dragging = false;
-  private hoveredEvent: TimelineEvent | null = null;
+  private panning = false;
+  private panLastX = 0;
+  private panStartX = 0;
+  private hoveredEvents: TimelineEvent[] = [];
   private userHasManuallyScrolled = false;
 
   constructor(
@@ -71,7 +76,34 @@ export class Timeline {
   }
 
   setNodeIds(ids: number[]): void {
-    this.nodeIds = ids;
+    // Accumulate all ever-seen node IDs, track which are currently active
+    this.activeNodeIds = new Set(ids);
+    for (const id of ids) {
+      if (!this.nodeIds.includes(id)) {
+        this.nodeIds.push(id);
+        this.nodeIds.sort((a, b) => a - b);
+      }
+    }
+  }
+
+  resetNodeIds(): void {
+    this.nodeIds = [];
+    this.activeNodeIds.clear();
+    this.convergenceHistory = [];
+  }
+
+  recordConvergence(timeUs: number, converged: boolean): void {
+    const last = this.convergenceHistory[this.convergenceHistory.length - 1];
+    if (!last || last.converged !== converged) {
+      this.convergenceHistory.push({ timeUs, converged });
+    }
+  }
+
+  truncateConvergenceAfter(timeUs: number): void {
+    while (this.convergenceHistory.length > 0 &&
+           this.convergenceHistory[this.convergenceHistory.length - 1].timeUs > timeUs) {
+      this.convergenceHistory.pop();
+    }
   }
 
   setHistoryTimes(times: number[]): void {
@@ -120,21 +152,29 @@ export class Timeline {
       this.viewEndUs = range;
     }
 
-    // Node ID labels in left gutter
+    // Convergence state row (row 0)
+    this.drawConvergenceRow(ctx, W, contentH);
+
+    // Node ID labels in left gutter (offset by 1 row for convergence)
     ctx.font = "bold 10px monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     for (let i = 0; i < nRows; i++) {
-      const y = i * ROW_H + ROW_H / 2;
+      const y = (i + 1) * ROW_H + ROW_H / 2;
       if (y > contentH) break;
-      ctx.fillStyle = "#888";
+      const active = this.activeNodeIds.has(this.nodeIds[i]);
+      ctx.fillStyle = active ? "#888" : "#444";
       ctx.fillText(`N${this.nodeIds[i]}`, GUTTER_W - 4, y);
     }
+
+    // Convergence row label
+    ctx.fillStyle = "#888";
+    ctx.fillText("Net", GUTTER_W - 4, ROW_H / 2);
 
     // Row grid lines
     ctx.strokeStyle = "#333";
     ctx.lineWidth = 0.5;
-    for (let i = 0; i <= nRows; i++) {
+    for (let i = 0; i <= nRows + 1; i++) {
       const y = i * ROW_H;
       if (y > contentH) break;
       ctx.beginPath();
@@ -155,17 +195,19 @@ export class Timeline {
       if (x < GUTTER_W - 10 || x > W + 10) continue;
       const rowIdx = this.nodeIds.indexOf(ev.nodeId);
       if (rowIdx < 0) continue;
-      const y = rowIdx * ROW_H;
+      const y = (rowIdx + 1) * ROW_H; // +1 for convergence row
       if (y > contentH) continue;
 
+      const active = this.activeNodeIds.has(ev.nodeId);
       const color = CODE_COLORS[ev.code];
+      ctx.globalAlpha = active ? 1.0 : 0.35;
       ctx.fillStyle = color;
-      // Two characters stacked vertically
       const top = ev.code[0];
       const bot = ev.code[1];
       ctx.fillText(top, x, y + 2);
       ctx.fillText(bot, x, y + 10);
     }
+    ctx.globalAlpha = 1.0;
 
     // Time axis
     this.drawTimeAxis(ctx, W, H, contentH);
@@ -196,7 +238,7 @@ export class Timeline {
       if (sx > W + 50) continue;
       const sRow = this.nodeIds.indexOf(ev.nodeId);
       if (sRow < 0) continue;
-      const sy = sRow * ROW_H + ROW_H / 2;
+      const sy = (sRow + 1) * ROW_H + ROW_H / 2;
       if (sy > contentH) continue;
 
       const color = CODE_COLORS[ev.code];
@@ -212,7 +254,7 @@ export class Timeline {
         if (rx < GUTTER_W - 50) continue;
         const rRow = this.nodeIds.indexOf(recv.nodeId);
         if (rRow < 0) continue;
-        const ry = rRow * ROW_H + ROW_H / 2;
+        const ry = (rRow + 1) * ROW_H + ROW_H / 2;
         if (ry > contentH) continue;
 
         ctx.beginPath();
@@ -221,6 +263,22 @@ export class Timeline {
         ctx.stroke();
       }
       ctx.restore();
+    }
+  }
+
+  private drawConvergenceRow(ctx: CanvasRenderingContext2D, W: number, contentH: number): void {
+    if (this.convergenceHistory.length === 0) return;
+    const y = 0;
+    const h = ROW_H;
+    // Draw colored segments for each convergence span
+    for (let i = 0; i < this.convergenceHistory.length; i++) {
+      const entry = this.convergenceHistory[i];
+      const nextEntry = this.convergenceHistory[i + 1];
+      const startX = Math.max(GUTTER_W, this.timeToX(entry.timeUs));
+      const endX = nextEntry ? this.timeToX(nextEntry.timeUs) : W;
+      if (endX < GUTTER_W || startX > W) continue;
+      ctx.fillStyle = entry.converged ? "rgba(39, 174, 96, 0.25)" : "rgba(231, 76, 60, 0.25)";
+      ctx.fillRect(Math.max(startX, GUTTER_W), y, Math.min(endX, W) - Math.max(startX, GUTTER_W), h);
     }
   }
 
@@ -310,27 +368,59 @@ export class Timeline {
     const canvas = this.canvas;
 
     canvas.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return;
-      this.dragging = true;
-      this.navigateToX(e.offsetX);
+      if (e.button === 0 || e.button === 1) {
+        e.preventDefault();
+        this.panning = true;
+        this.panLastX = e.offsetX;
+        this.panStartX = e.offsetX;
+        canvas.style.cursor = "grabbing";
+      }
     });
 
     canvas.addEventListener("mousemove", (e) => {
-      if (this.dragging) {
-        this.navigateToX(e.offsetX);
+      if (this.panning) {
+        const dx = e.offsetX - this.panLastX;
+        const plotW = this.canvas.width - GUTTER_W;
+        if (plotW > 0) {
+          const range = this.viewEndUs - this.viewStartUs;
+          const shift = -(dx / plotW) * range;
+          this.viewStartUs += shift;
+          this.viewEndUs += shift;
+          this.userHasManuallyScrolled = true;
+        }
+        this.panLastX = e.offsetX;
       } else {
         this.handleHover(e.offsetX, e.offsetY);
       }
     });
 
-    canvas.addEventListener("mouseup", () => {
-      this.dragging = false;
+    canvas.addEventListener("mouseup", (e) => {
+      if (this.panning) {
+        // If barely moved, treat as a click → navigate cursor
+        if (Math.abs(e.offsetX - this.panStartX) < 3) {
+          if (this.isPlaying?.()) {
+            this.showWarning(e.offsetX);
+          } else {
+            this.navigateToX(e.offsetX);
+          }
+        }
+        this.panning = false;
+        canvas.style.cursor = "";
+      }
     });
 
     canvas.addEventListener("mouseleave", () => {
-      this.dragging = false;
+      if (this.panning) {
+        this.panning = false;
+        canvas.style.cursor = "";
+      }
       this.tooltip.style.display = "none";
-      this.hoveredEvent = null;
+      this.hoveredEvents = [];
+    });
+
+    // Prevent context menu on middle-click
+    canvas.addEventListener("auxclick", (e) => {
+      if (e.button === 1) e.preventDefault();
     });
 
     // Wheel: zoom around mouse; shift+wheel: horizontal scroll
@@ -380,44 +470,45 @@ export class Timeline {
     const contentH = this.canvas.height - AXIS_H;
     if (y > contentH || x < GUTTER_W) {
       this.tooltip.style.display = "none";
-      this.hoveredEvent = null;
+      this.hoveredEvents = [];
       return;
     }
 
-    // Hit-test events
+    // Hit-test: collect all events within radius
     const hitRadius = 8;
-    let closest: TimelineEvent | null = null;
-    let closestDist = hitRadius;
+    const hits: { ev: TimelineEvent; dist: number }[] = [];
 
     for (const ev of this.eventLog.events) {
       const ex = this.timeToX(ev.timeUs);
       const rowIdx = this.nodeIds.indexOf(ev.nodeId);
       if (rowIdx < 0) continue;
-      const ey = rowIdx * ROW_H + ROW_H / 2;
+      const ey = (rowIdx + 1) * ROW_H + ROW_H / 2;
       const dx = x - ex, dy = y - ey;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < closestDist) {
-        closestDist = dist;
-        closest = ev;
+      if (dist < hitRadius) {
+        hits.push({ ev, dist });
       }
     }
 
-    if (closest) {
-      if (closest !== this.hoveredEvent) {
-        this.hoveredEvent = closest;
-        this.showTooltip(closest, x, y);
+    if (hits.length > 0) {
+      hits.sort((a, b) => a.dist - b.dist);
+      const evs = hits.map(h => h.ev);
+      // Only update if the set of hovered events changed
+      if (evs.length !== this.hoveredEvents.length || evs.some((e, i) => e !== this.hoveredEvents[i])) {
+        this.hoveredEvents = evs;
+        this.showTooltip(evs, x, y);
       }
     } else {
       // Check arrow hover
       const arrowHit = this.hitTestArrow(x, y);
       if (arrowHit) {
-        if (arrowHit !== this.hoveredEvent) {
-          this.hoveredEvent = arrowHit;
+        if (this.hoveredEvents.length !== 1 || this.hoveredEvents[0] !== arrowHit) {
+          this.hoveredEvents = [arrowHit];
           this.showArrowTooltip(arrowHit, x, y);
         }
       } else {
         this.tooltip.style.display = "none";
-        this.hoveredEvent = null;
+        this.hoveredEvents = [];
       }
     }
   }
@@ -429,7 +520,7 @@ export class Timeline {
       const sx = this.timeToX(ev.timeUs);
       const sRow = this.nodeIds.indexOf(ev.nodeId);
       if (sRow < 0) continue;
-      const sy = sRow * ROW_H + ROW_H / 2;
+      const sy = (sRow + 1) * ROW_H + ROW_H / 2;
 
       for (const rid of ev.receiveIds) {
         const recv = this.eventLog.events.find(e => e.id === rid);
@@ -437,7 +528,7 @@ export class Timeline {
         const rx = this.timeToX(recv.timeUs);
         const rRow = this.nodeIds.indexOf(recv.nodeId);
         if (rRow < 0) continue;
-        const ry = rRow * ROW_H + ROW_H / 2;
+        const ry = (rRow + 1) * ROW_H + ROW_H / 2;
 
         const dist = this.pointToSegmentDist(x, y, sx, sy, rx, ry);
         if (dist < threshold) return ev;
@@ -458,17 +549,21 @@ export class Timeline {
     return Math.sqrt((px - cx) ** 2 + (py - cy) ** 2);
   }
 
-  private showTooltip(ev: TimelineEvent, x: number, y: number): void {
+  private formatEvent(ev: TimelineEvent): string {
     const name = CODE_NAMES[ev.code];
     const d = ev.details;
-    let text = `${ev.code} - ${name}\nNode: N${ev.nodeId}\nTime: ${(ev.timeUs / 1_000_000).toFixed(3)}s`;
-    if (d.name) text += `\nTopic: ${d.name}`;
-    if (d.evictions !== undefined) text += `\nEvictions: ${d.evictions}`;
-    if (d.lage !== undefined) text += `\nLage: ${d.lage}`;
-    if (d.dst !== null && d.dst !== undefined) text += `\nDst: N${d.dst}`;
-    if (d.type) text += `\nType: ${d.type}`;
-    if (d.local_won !== undefined) text += `\nLocal won: ${d.local_won}`;
+    let text = `${ev.code} - ${name}  N${ev.nodeId}  ${(ev.timeUs / 1_000_000).toFixed(3)}s`;
+    if (d.name) text += `  Topic: ${d.name}`;
+    if (d.evictions !== undefined) text += `  Evictions: ${d.evictions}`;
+    if (d.lage !== undefined) text += `  Lage: ${d.lage}`;
+    if (d.dst !== null && d.dst !== undefined) text += `  Dst: N${d.dst}`;
+    if (d.type) text += `  Type: ${d.type}`;
+    if (d.local_won !== undefined) text += `  Local won: ${d.local_won}`;
+    return text;
+  }
 
+  private showTooltip(evs: TimelineEvent[], x: number, y: number): void {
+    const text = evs.map(ev => this.formatEvent(ev)).join("\n");
     this.tooltip.textContent = text;
     this.tooltip.style.display = "block";
     const rect = this.canvas.parentElement!.getBoundingClientRect();
@@ -490,5 +585,20 @@ export class Timeline {
     const rect = this.canvas.parentElement!.getBoundingClientRect();
     this.tooltip.style.left = Math.min(x + 12, rect.width - 200) + "px";
     this.tooltip.style.top = Math.max(0, y - 40) + "px";
+  }
+
+  private warningTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  private showWarning(x: number): void {
+    this.tooltip.textContent = "Pause to rewind. Resuming from old state erases newer history.";
+    this.tooltip.style.display = "block";
+    const rect = this.canvas.parentElement!.getBoundingClientRect();
+    this.tooltip.style.left = Math.min(x + 12, rect.width - 200) + "px";
+    this.tooltip.style.top = "4px";
+    if (this.warningTimeout) clearTimeout(this.warningTimeout);
+    this.warningTimeout = setTimeout(() => {
+      this.tooltip.style.display = "none";
+      this.warningTimeout = null;
+    }, 2000);
   }
 }
