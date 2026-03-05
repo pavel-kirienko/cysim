@@ -16,6 +16,7 @@ export interface NodeBlockCallbacks {
   onChangeEvictions(nid: number, hash: bigint, delta: number): void;
   onChangeLage(nid: number, hash: bigint, delta: number): void;
   onDragMove(nid: number, dx: number, dy: number): void;
+  onTopicHover(nid: number, hash: bigint | null): void;
 }
 
 export class NodeBlock {
@@ -160,6 +161,21 @@ export class NodeBlock {
     }
   }
 
+  setHighlighted(on: boolean): void {
+    this.el.classList.toggle("nb-highlighted", on);
+  }
+
+  highlightTopic(hash: bigint | null): void {
+    // Clear previous
+    const prev = this.topicsBody.querySelector("tr.nb-topic-highlighted");
+    if (prev) prev.classList.remove("nb-topic-highlighted");
+    if (hash !== null) {
+      const key = hash.toString(36);
+      const row = this.topicsBody.querySelector(`tr[data-hash="${key}"]`);
+      if (row) row.classList.add("nb-topic-highlighted");
+    }
+  }
+
   setMinimalMode(minimal: boolean): void {
     this.el.classList.toggle("minimal", minimal);
   }
@@ -183,6 +199,7 @@ export class NodeBlock {
     }
     for (const t of topics) {
       const tr = document.createElement("tr");
+      tr.dataset.hash = t.hash.toString(36);
 
       const tdName = document.createElement("td");
       tdName.textContent = t.name.length > 10 ? t.name.slice(0, 10) : t.name;
@@ -218,6 +235,8 @@ export class NodeBlock {
       tdDel.appendChild(delBtn);
 
       tr.append(tdName, tdSid, tdEv, tdLage, tdDel);
+      tr.addEventListener("mouseenter", () => this.callbacks.onTopicHover(this.nodeId, t.hash));
+      tr.addEventListener("mouseleave", () => this.callbacks.onTopicHover(this.nodeId, null));
       this.topicsBody.appendChild(tr);
     }
   }

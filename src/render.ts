@@ -44,7 +44,6 @@ export class Renderer {
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
-  highlightedNodeId: number | null = null;
 
   private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
   private get logicalH(): number { return this.canvas.height / (window.devicePixelRatio || 1); }

@@ -31,6 +31,7 @@ export class UI {
   // Topic panel
   private topicPanel: HTMLElement;
   private topicCacheKey = "";
+  private topicTableCells: Map<string, HTMLTableCellElement> = new Map(); // "hash36:nodeId" -> td
 
   // Control elements
   private playBtn!: HTMLButtonElement;
@@ -414,6 +415,9 @@ export class UI {
         pos.x += dx / this.viewport.currentZoom;
         pos.y += dy / this.viewport.currentZoom;
       },
+      onTopicHover: (nid, hash) => {
+        this.handleNodeBlockTopicHover(nid, hash);
+      },
     };
     return new NodeBlock(nodeId, callbacks);
   }
@@ -623,6 +627,29 @@ export class UI {
     });
   }
 
+  private handleNodeBlockTopicHover(nid: number, hash: bigint | null): void {
+    // Clear previous table cell highlights
+    for (const cell of this.topicTableCells.values()) {
+      cell.classList.remove("cell-highlighted");
+    }
+    // Clear node block highlights
+    for (const block of this.nodeBlocks.values()) {
+      block.setHighlighted(false);
+      block.highlightTopic(null);
+    }
+    if (hash === null) return;
+    // Highlight the source node block + topic row
+    const block = this.nodeBlocks.get(nid);
+    if (block) {
+      block.setHighlighted(true);
+      block.highlightTopic(hash);
+    }
+    // Highlight the specific cell in the topic table
+    const key = `${hash.toString(36)}:${nid}`;
+    const cell = this.topicTableCells.get(key);
+    if (cell) cell.classList.add("cell-highlighted");
+  }
+
   private updateTopicView(snaps: Map<number, NodeSnapshot>): void {
     // 1. Build matrix: Map<hash, { name, cells: Map<nodeId, TopicSnap> }>
     type TopicRow = { name: string; cells: Map<number, TopicSnap> };
@@ -752,6 +779,31 @@ export class UI {
     }
 
     // 5. Build DOM
+    this.topicTableCells.clear();
+    const clearAllHighlights = () => {
+      for (const block of this.nodeBlocks.values()) {
+        block.setHighlighted(false);
+        block.highlightTopic(null);
+      }
+      for (const cell of this.topicTableCells.values()) {
+        cell.classList.remove("cell-highlighted");
+      }
+    };
+
+    const highlightNodeAndTopic = (nid: number, hash: bigint | null) => {
+      const block = this.nodeBlocks.get(nid);
+      if (block) {
+        block.setHighlighted(true);
+        if (hash !== null) block.highlightTopic(hash);
+      }
+    };
+
+    const highlightAllForTopic = (hash: bigint, topicRow: TopicRow) => {
+      for (const [nid] of topicRow.cells) {
+        highlightNodeAndTopic(nid, hash);
+      }
+    };
+
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const headerRow = document.createElement("tr");
@@ -761,9 +813,16 @@ export class UI {
     for (const nid of nodeIds) {
       const th = document.createElement("th");
       th.textContent = `Node${nid}`;
-      th.addEventListener("mouseenter", () => { this.renderer.highlightedNodeId = nid; });
+      th.addEventListener("mouseenter", () => {
+        clearAllHighlights();
+        const block = this.nodeBlocks.get(nid);
+        if (block) block.setHighlighted(true);
+      });
       headerRow.appendChild(th);
     }
+    const thConsensus = document.createElement("th");
+    thConsensus.textContent = "Consensus";
+    headerRow.appendChild(thConsensus);
     thead.appendChild(headerRow);
     table.appendChild(thead);
 
@@ -777,14 +836,25 @@ export class UI {
     });
     for (const [hash, row] of sortedTopics) {
       const tr = document.createElement("tr");
+
+      // Topic name cell (first col)
       const tdName = document.createElement("td");
       tdName.textContent = row.name.length > 18 ? row.name.slice(0, 18) : row.name;
       tdName.title = row.name;
+      tdName.addEventListener("mouseenter", () => {
+        clearAllHighlights();
+        highlightAllForTopic(hash, row);
+      });
       tr.appendChild(tdName);
+
       for (const nid of nodeIds) {
         const td = document.createElement("td");
-        td.addEventListener("mouseenter", () => { this.renderer.highlightedNodeId = nid; });
         const t = row.cells.get(nid);
+        const capturedHash = hash;
+        td.addEventListener("mouseenter", () => {
+          clearAllHighlights();
+          highlightNodeAndTopic(nid, t ? capturedHash : null);
+        });
         if (t) {
           const line1 = document.createElement("div");
           line1.className = "cell-line1";
@@ -810,11 +880,36 @@ export class UI {
           }
         }
         tr.appendChild(td);
+        this.topicTableCells.set(`${hash.toString(36)}:${nid}`, td);
       }
+
+      // Consensus cell (last col)
+      const tdCons = document.createElement("td");
+      let winner: TopicSnap | null = null;
+      for (const [, t] of row.cells) {
+        if (!winner || t.evictions > winner.evictions) {
+          winner = t;
+        }
+      }
+      if (winner) {
+        const line1 = document.createElement("div");
+        line1.className = "cell-line1";
+        line1.textContent = `${winner.evictions} ${winner.lage}`;
+        const line2 = document.createElement("div");
+        line2.className = "cell-line2";
+        line2.textContent = `${winner.subjectId}`;
+        tdCons.append(line1, line2);
+      }
+      tdCons.addEventListener("mouseenter", () => {
+        clearAllHighlights();
+        highlightAllForTopic(hash, row);
+      });
+      tr.appendChild(tdCons);
+
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    table.addEventListener("mouseleave", () => { this.renderer.highlightedNodeId = null; });
+    table.addEventListener("mouseleave", () => { clearAllHighlights(); });
 
     // 6. Replace previous table
     const old = this.topicPanel.querySelector("table");
