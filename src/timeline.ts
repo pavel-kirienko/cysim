@@ -38,6 +38,8 @@ const ROW_H = 20;
 const AXIS_H = 16;
 const MARKER_FONT = "bold 7px monospace";
 const COLOCATED_SPACING = 8; // horizontal pixels between same-timestep markers
+const NET_BIN_US = 100_000; // 0.1s bins for network utilization chart
+const NET_MSG_CODES = new Set<TimelineCode>(["GB", "GU", "GF", "GR"]);
 
 export class Timeline {
   private canvas: HTMLCanvasElement;
@@ -162,8 +164,8 @@ export class Timeline {
       this.viewEndUs = range;
     }
 
-    // Convergence state row (row 0)
-    this.drawConvergenceRow(ctx, W, contentH);
+    // Net row (row 0): convergence background + msg/s sparkline
+    this.drawNetRow(ctx, W, contentH);
 
     // Node ID labels in left gutter (offset by 1 row for convergence)
     ctx.font = "bold 10px monospace";
@@ -305,11 +307,11 @@ export class Timeline {
     }
   }
 
-  private drawConvergenceRow(ctx: CanvasRenderingContext2D, W: number, contentH: number): void {
-    if (this.convergenceHistory.length === 0) return;
+  private drawNetRow(ctx: CanvasRenderingContext2D, W: number, contentH: number): void {
     const y = 0;
     const h = ROW_H;
-    // Draw colored segments for each convergence span
+
+    // Convergence background
     for (let i = 0; i < this.convergenceHistory.length; i++) {
       const entry = this.convergenceHistory[i];
       const nextEntry = this.convergenceHistory[i + 1];
@@ -319,6 +321,63 @@ export class Timeline {
       ctx.fillStyle = entry.converged ? "rgba(39, 174, 96, 0.25)" : "rgba(231, 76, 60, 0.25)";
       ctx.fillRect(Math.max(startX, GUTTER_W), y, Math.min(endX, W) - Math.max(startX, GUTTER_W), h);
     }
+
+    // Network utilization sparkline (msg/s in 0.1s bins)
+    const events = this.eventLog.events;
+    if (events.length === 0) return;
+
+    // Determine visible bin range
+    const binStart = Math.floor(this.viewStartUs / NET_BIN_US);
+    const binEnd = Math.ceil(this.viewEndUs / NET_BIN_US);
+
+    // Count messages per bin using a sweep over sorted events
+    const binCounts = new Map<number, number>();
+    for (const ev of events) {
+      if (!NET_MSG_CODES.has(ev.code)) continue;
+      const bin = Math.floor(ev.timeUs / NET_BIN_US);
+      if (bin < binStart - 1 || bin > binEnd + 1) continue;
+      binCounts.set(bin, (binCounts.get(bin) || 0) + 1);
+    }
+
+    if (binCounts.size === 0) return;
+
+    // Find max for scaling
+    let maxCount = 0;
+    for (const c of binCounts.values()) {
+      if (c > maxCount) maxCount = c;
+    }
+    if (maxCount === 0) return;
+
+    const padding = 2;
+    const chartH = h - padding * 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(GUTTER_W, y, W - GUTTER_W, h);
+    ctx.clip();
+
+    ctx.fillStyle = "rgba(52, 152, 219, 0.5)";
+    for (let bin = binStart; bin <= binEnd; bin++) {
+      const count = binCounts.get(bin) || 0;
+      if (count === 0) continue;
+      const x0 = this.timeToX(bin * NET_BIN_US);
+      const x1 = this.timeToX((bin + 1) * NET_BIN_US);
+      const barH = (count / maxCount) * chartH;
+      ctx.fillRect(x0, y + h - padding - barH, x1 - x0, barH);
+    }
+
+    ctx.restore();
+  }
+
+  private getNetMsgRate(timeUs: number): number {
+    const binStart = timeUs - NET_BIN_US / 2;
+    const binEnd = timeUs + NET_BIN_US / 2;
+    let count = 0;
+    for (const ev of this.eventLog.events) {
+      if (!NET_MSG_CODES.has(ev.code)) continue;
+      if (ev.timeUs >= binStart && ev.timeUs < binEnd) count++;
+    }
+    return count * (1_000_000 / NET_BIN_US); // scale to msg/s
   }
 
   private drawTimeAxis(
@@ -509,6 +568,19 @@ export class Timeline {
     const contentH = this.logicalH - AXIS_H;
     if (y > contentH || x < GUTTER_W) {
       this.tooltip.style.display = "none";
+      this.hoveredEvents = [];
+      return;
+    }
+
+    // Net row hover: show msg/s
+    if (y < ROW_H) {
+      const timeUs = this.xToTime(x);
+      const rate = this.getNetMsgRate(timeUs);
+      this.tooltip.textContent = `${rate.toFixed(0)} msg/s`;
+      this.tooltip.style.display = "block";
+      const rect = this.canvas.parentElement!.getBoundingClientRect();
+      this.tooltip.style.left = Math.min(x + 12, rect.width - 80) + "px";
+      this.tooltip.style.top = Math.max(0, y - 20) + "px";
       this.hoveredEvents = [];
       return;
     }
