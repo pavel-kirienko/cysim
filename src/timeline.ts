@@ -66,8 +66,10 @@ export class Timeline {
   private panning = false;
   private panLastX = 0;
   private panStartX = 0;
+  private draggingCursor = false;
   private hoveredEvents: TimelineEvent[] = [];
   private userHasManuallyScrolled = false;
+  private lastCursorX = 0; // cached cursor screen X for hit-testing
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -144,15 +146,16 @@ export class Timeline {
     const contentH = H - AXIS_H;
     const nRows = this.nodeIds.length;
 
-    // Auto-scroll: if cursor > 90% of viewport, shift right
+    // Auto-scroll: if cursor > 90% of viewport, shift right (only when playing)
     const range = this.viewEndUs - this.viewStartUs;
+    const playing = this.isPlaying?.() ?? false;
     if (this.userHasManuallyScrolled) {
       // Reset flag once the cursor approaches the right edge again (live edge)
-      if (currentTimeUs > this.viewEndUs - range * 0.2) {
+      if (playing && currentTimeUs > this.viewEndUs - range * 0.2) {
         this.userHasManuallyScrolled = false;
       }
     }
-    if (!this.userHasManuallyScrolled && currentTimeUs > this.viewStartUs + range * 0.9) {
+    if (!this.userHasManuallyScrolled && playing && currentTimeUs > this.viewStartUs + range * 0.9) {
       this.viewStartUs = currentTimeUs - range * 0.5;
       this.viewEndUs = this.viewStartUs + range;
     }
@@ -198,6 +201,12 @@ export class Timeline {
     // Build co-located offsets before drawing
     this.buildColocatedOffsets();
 
+    // Clip plot area so markers/arrows don't occlude gutter labels
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(GUTTER_W, 0, W - GUTTER_W, contentH);
+    ctx.clip();
+
     // Causal arrows (behind markers)
     this.drawCausalArrows(ctx, contentH);
 
@@ -223,6 +232,8 @@ export class Timeline {
       ctx.fillText(bot, x, y + 10);
     }
     ctx.globalAlpha = 1.0;
+
+    ctx.restore();
 
     // Time axis
     this.drawTimeAxis(ctx, W, H, contentH);
@@ -437,6 +448,7 @@ export class Timeline {
     W: number, contentH: number, H: number,
   ): void {
     const x = this.timeToX(timeUs);
+    this.lastCursorX = x;
     if (x < GUTTER_W || x > W) return;
 
     // Vertical dashed line
@@ -468,15 +480,24 @@ export class Timeline {
     canvas.addEventListener("mousedown", (e) => {
       if (e.button === 0 || e.button === 1) {
         e.preventDefault();
-        this.panning = true;
-        this.panLastX = e.offsetX;
-        this.panStartX = e.offsetX;
-        canvas.style.cursor = "grabbing";
+        // Check if clicking on the cursor triangle (bottom axis area, near cursor X)
+        const contentH = this.logicalH - AXIS_H;
+        if (!this.isPlaying?.() && e.offsetY >= contentH && Math.abs(e.offsetX - this.lastCursorX) < 10) {
+          this.draggingCursor = true;
+          canvas.style.cursor = "ew-resize";
+        } else {
+          this.panning = true;
+          this.panLastX = e.offsetX;
+          this.panStartX = e.offsetX;
+          canvas.style.cursor = "grabbing";
+        }
       }
     });
 
     canvas.addEventListener("mousemove", (e) => {
-      if (this.panning) {
+      if (this.draggingCursor) {
+        this.navigateToX(e.offsetX);
+      } else if (this.panning) {
         const dx = e.offsetX - this.panLastX;
         const plotW = this.logicalW - GUTTER_W;
         if (plotW > 0) {
@@ -493,7 +514,10 @@ export class Timeline {
     });
 
     canvas.addEventListener("mouseup", (e) => {
-      if (this.panning) {
+      if (this.draggingCursor) {
+        this.draggingCursor = false;
+        canvas.style.cursor = "";
+      } else if (this.panning) {
         // If barely moved, treat as a click → navigate cursor
         if (Math.abs(e.offsetX - this.panStartX) < 3) {
           if (this.isPlaying?.()) {
@@ -508,7 +532,10 @@ export class Timeline {
     });
 
     canvas.addEventListener("mouseleave", () => {
-      if (this.panning) {
+      if (this.draggingCursor) {
+        this.draggingCursor = false;
+        canvas.style.cursor = "";
+      } else if (this.panning) {
         this.panning = false;
         canvas.style.cursor = "";
       }
