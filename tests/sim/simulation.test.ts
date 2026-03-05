@@ -44,8 +44,8 @@ describe("Simulation", () => {
       sim.addNode();
       sim.stepUntil(1);
       expect(sim.nodes.get(0)!.gossipNextUs).toBe(Number.MAX_SAFE_INTEGER);
-      sim.stepUntil(30_000_000);
-      expect(sim.eventCounts["broadcast"] || 0).toBe(0);
+      const events = sim.stepUntil(30_000_000);
+      expect(events.filter(e => e.event === "broadcast").length).toBe(0);
     });
   });
 
@@ -92,8 +92,8 @@ describe("Simulation", () => {
       sim.stepUntil(1);
       sim.addTopicToNode(0, "my/topic");
       expect(sim.nodes.get(0)!.gossipNextUs).not.toBe(Number.MAX_SAFE_INTEGER);
-      sim.stepUntil(sim.nowUs + 10_000_000);
-      expect(sim.eventCounts["broadcast"] || 0).toBeGreaterThan(0);
+      const events = sim.stepUntil(sim.nowUs + 10_000_000);
+      expect(events.filter(e => e.event === "broadcast").length).toBeGreaterThan(0);
     });
 
     it("topics added before join still gossip after node joins", () => {
@@ -101,8 +101,8 @@ describe("Simulation", () => {
       sim.addNode();
       sim.addTopicToNode(0, "offline/topic");
       sim.stepUntil(1);
-      sim.stepUntil(sim.nowUs + 10_000_000);
-      expect(sim.eventCounts["broadcast"] || 0).toBeGreaterThan(0);
+      const events = sim.stepUntil(sim.nowUs + 10_000_000);
+      expect(events.filter(e => e.event === "broadcast").length).toBeGreaterThan(0);
     });
   });
 
@@ -186,13 +186,13 @@ describe("Simulation", () => {
       expect(second.length).toBe(0);
     });
 
-    it("increments eventCounts", () => {
+    it("drainPendingEvents returns topic_new event", () => {
       const sim = makeSim();
       sim.addNode();
       sim.stepUntil(1);
       sim.addTopicToNode(0, "topic/a");
-      sim.drainPendingEvents();
-      expect(sim.eventCounts["topic_new"]).toBe(1);
+      const events = sim.drainPendingEvents();
+      expect(events.filter(e => e.event === "topic_new").length).toBe(1);
     });
   });
 });

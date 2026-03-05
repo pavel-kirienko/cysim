@@ -37,6 +37,7 @@ const GUTTER_W = 40;
 const ROW_H = 20;
 const AXIS_H = 16;
 const MARKER_FONT = "bold 7px monospace";
+const COLOCATED_SPACING = 8; // horizontal pixels between same-timestep markers
 
 export class Timeline {
   private canvas: HTMLCanvasElement;
@@ -192,6 +193,9 @@ export class Timeline {
       ctx.stroke();
     }
 
+    // Build co-located offsets before drawing
+    this.buildColocatedOffsets();
+
     // Causal arrows (behind markers)
     this.drawCausalArrows(ctx, contentH);
 
@@ -200,7 +204,7 @@ export class Timeline {
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     for (const ev of this.eventLog.events) {
-      const x = this.timeToX(ev.timeUs);
+      const x = this.eventX(ev);
       if (x < GUTTER_W - 10 || x > W + 10) continue;
       const rowIdx = this.nodeIds.indexOf(ev.nodeId);
       if (rowIdx < 0) continue;
@@ -225,6 +229,32 @@ export class Timeline {
     this.drawCursor(ctx, currentTimeUs, W, contentH, H);
   }
 
+  // Cache of per-event x-offsets for co-located events (same nodeId + timeUs)
+  private colocatedOffsets = new Map<number, number>(); // event.id → pixel offset
+
+  private buildColocatedOffsets(): void {
+    this.colocatedOffsets.clear();
+    // Group events by (nodeId, timeUs) preserving array order
+    const groups = new Map<string, TimelineEvent[]>();
+    for (const ev of this.eventLog.events) {
+      const key = `${ev.nodeId}:${ev.timeUs}`;
+      let group = groups.get(key);
+      if (!group) { group = []; groups.set(key, group); }
+      group.push(ev);
+    }
+    for (const group of groups.values()) {
+      if (group.length <= 1) continue;
+      const totalWidth = (group.length - 1) * COLOCATED_SPACING;
+      for (let i = 0; i < group.length; i++) {
+        this.colocatedOffsets.set(group[i].id, -totalWidth / 2 + i * COLOCATED_SPACING);
+      }
+    }
+  }
+
+  private eventX(ev: TimelineEvent): number {
+    return this.timeToX(ev.timeUs) + (this.colocatedOffsets.get(ev.id) ?? 0);
+  }
+
   private timeToX(timeUs: number): number {
     const range = this.viewEndUs - this.viewStartUs;
     if (range <= 0) return GUTTER_W;
@@ -243,7 +273,7 @@ export class Timeline {
     const W = this.logicalW;
     for (const ev of this.eventLog.events) {
       if (ev.receiveIds.length === 0) continue;
-      const sx = this.timeToX(ev.timeUs);
+      const sx = this.eventX(ev);
       if (sx > W + 50) continue;
       const sRow = this.nodeIds.indexOf(ev.nodeId);
       if (sRow < 0) continue;
@@ -259,7 +289,7 @@ export class Timeline {
       for (const rid of ev.receiveIds) {
         const recv = this.eventLog.events.find(e => e.id === rid);
         if (!recv) continue;
-        const rx = this.timeToX(recv.timeUs);
+        const rx = this.eventX(recv);
         if (rx < GUTTER_W - 50) continue;
         const rRow = this.nodeIds.indexOf(recv.nodeId);
         if (rRow < 0) continue;
@@ -488,7 +518,7 @@ export class Timeline {
     const hits: { ev: TimelineEvent; dist: number }[] = [];
 
     for (const ev of this.eventLog.events) {
-      const ex = this.timeToX(ev.timeUs);
+      const ex = this.eventX(ev);
       const rowIdx = this.nodeIds.indexOf(ev.nodeId);
       if (rowIdx < 0) continue;
       const ey = (rowIdx + 1) * ROW_H + ROW_H / 2;
@@ -526,7 +556,7 @@ export class Timeline {
     const threshold = 6;
     for (const ev of this.eventLog.events) {
       if (ev.receiveIds.length === 0) continue;
-      const sx = this.timeToX(ev.timeUs);
+      const sx = this.eventX(ev);
       const sRow = this.nodeIds.indexOf(ev.nodeId);
       if (sRow < 0) continue;
       const sy = (sRow + 1) * ROW_H + ROW_H / 2;
@@ -534,7 +564,7 @@ export class Timeline {
       for (const rid of ev.receiveIds) {
         const recv = this.eventLog.events.find(e => e.id === rid);
         if (!recv) continue;
-        const rx = this.timeToX(recv.timeUs);
+        const rx = this.eventX(recv);
         const rRow = this.nodeIds.indexOf(recv.nodeId);
         if (rRow < 0) continue;
         const ry = (rRow + 1) * ROW_H + ROW_H / 2;

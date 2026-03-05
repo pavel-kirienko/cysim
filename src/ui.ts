@@ -35,7 +35,6 @@ export class UI {
   private timeDisplay!: HTMLSpanElement;
   private historyDisplay!: HTMLSpanElement;
   private convergenceDisplay!: HTMLSpanElement;
-  private eventCountsEl!: HTMLElement;
   private seedInput!: HTMLInputElement;
 
   // State
@@ -241,19 +240,6 @@ export class UI {
       panel.appendChild(row);
     }
 
-    // Event counts
-    const evTitle = document.createElement("div");
-    evTitle.textContent = "Event counts";
-    evTitle.style.fontWeight = "bold";
-    evTitle.style.marginTop = "16px";
-    evTitle.style.marginBottom = "6px";
-    evTitle.style.fontSize = "13px";
-    panel.appendChild(evTitle);
-
-    this.eventCountsEl = document.createElement("div");
-    this.eventCountsEl.style.fontSize = "11px";
-    this.eventCountsEl.style.fontFamily = "monospace";
-    panel.appendChild(this.eventCountsEl);
   }
 
   updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number): void {
@@ -270,15 +256,6 @@ export class UI {
     const conv = this.sim.checkConvergenceFromSnaps(snaps);
     this.convergenceDisplay.textContent = `Converged: ${conv ? "YES" : "NO"}`;
     this.convergenceDisplay.style.color = conv ? C_CONVERGED : C_DIVERGED;
-
-    // Event counts
-    const types = ["broadcast", "unicast", "forward", "conflict", "resolved", "join"];
-    const lines = types.map(t => {
-      const c = this.sim.eventCounts[t] || 0;
-      return `${t.padEnd(12)} ${c}`;
-    });
-    this.eventCountsEl.textContent = lines.join("\n");
-    this.eventCountsEl.style.whiteSpace = "pre";
 
     // Update per-node overlays
     this.syncOverlays(snaps);

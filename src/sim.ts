@@ -416,7 +416,6 @@ export interface SimState {
   nextAutoId: number;
   nextAutoTopicChar: number;
   rngState: number;
-  eventCounts: Record<string, number>;
   nodes: Map<number, Node>;
   queueData: SimEvent[];
 }
@@ -434,7 +433,6 @@ export class Simulation {
   private nextAutoTopicChar = 97; // 'a'
   readonly seed: number;
 
-  eventCounts: Record<string, number> = {};
   pendingEvents: EventRecord[] = [];
 
   constructor(net: NetworkConfig, rngSeed = 42) {
@@ -473,7 +471,6 @@ export class Simulation {
       nextAutoId: this.nextAutoId,
       nextAutoTopicChar: this.nextAutoTopicChar,
       rngState: this.rng.getState(),
-      eventCounts: { ...this.eventCounts },
       nodes,
       queueData,
     };
@@ -485,8 +482,6 @@ export class Simulation {
     this.nextAutoId = state.nextAutoId;
     this.nextAutoTopicChar = state.nextAutoTopicChar;
     this.rng.setState(state.rngState);
-    this.eventCounts = { ...state.eventCounts };
-
     this.nodes.clear();
     for (const [id, n] of state.nodes) {
       const topics = new Map<bigint, Topic>();
@@ -632,9 +627,6 @@ export class Simulation {
 
   drainPendingEvents(): EventRecord[] {
     const events = this.pendingEvents.slice();
-    for (const rec of events) {
-      this.eventCounts[rec.event] = (this.eventCounts[rec.event] || 0) + 1;
-    }
     this.pendingEvents.length = 0;
     return events;
   }
@@ -643,7 +635,6 @@ export class Simulation {
     const newEvents: EventRecord[] = [];
     const pushLog = (rec: EventRecord) => {
       newEvents.push(rec);
-      this.eventCounts[rec.event] = (this.eventCounts[rec.event] || 0) + 1;
     };
 
     while (this.queue.length > 0) {
