@@ -10,9 +10,6 @@ import { Viewport } from "./viewport.js";
 import { NodeBlock, NodeBlockCallbacks } from "./node-block.js";
 
 // Colors for legend
-const C_ONLINE    = "#d5e8d4";
-const C_CONFLICT  = "#f8cecc";
-const C_OFFLINE   = "#555555";
 const C_BROADCAST = "#f1c40f";
 const C_UNICAST   = "#e67e22";
 const C_FORWARD   = "#9b59b6";
@@ -262,9 +259,6 @@ export class UI {
     panel.appendChild(legendTitle);
 
     const legendItems: [string, string, string][] = [
-      [C_ONLINE,    "box",    "Node online"],
-      [C_CONFLICT,  "box",    "Node in conflict"],
-      [C_OFFLINE,   "box",    "Node offline"],
       [C_BROADCAST, "circle", "Broadcast gossip"],
       [C_UNICAST,   "line",   "Unicast epidemic"],
       [C_FORWARD,   "dash",   "Epidemic forward"],

@@ -23,5 +23,5 @@ export const SPIN_BLOCK_MAX         = 5_000;
 
 export const PROPAGATION_SPEED      = 8000;         // pixels per second of sim time
 export const MSG_PERSIST_US         = 1_000_000;    // unicast/forward arrow linger after arrival
-export const BROADCAST_PERSIST_US   = 300_000;     // expanding circle lifetime
+export const BROADCAST_PERSIST_US   = 200_000;      // expanding circle lifetime
 export const CONFLICT_FLASH_US      = 200_000;
