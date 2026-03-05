@@ -56,6 +56,7 @@ export class Timeline {
   // Interaction state
   private dragging = false;
   private hoveredEvent: TimelineEvent | null = null;
+  private userHasManuallyScrolled = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -100,8 +101,14 @@ export class Timeline {
     const nRows = this.nodeIds.length;
 
     // Auto-scroll: if cursor > 90% of viewport, shift right
-    if (currentTimeUs > this.viewStartUs + (this.viewEndUs - this.viewStartUs) * 0.9) {
-      const range = this.viewEndUs - this.viewStartUs;
+    const range = this.viewEndUs - this.viewStartUs;
+    if (this.userHasManuallyScrolled) {
+      // Reset flag once the cursor approaches the right edge again (live edge)
+      if (currentTimeUs > this.viewEndUs - range * 0.2) {
+        this.userHasManuallyScrolled = false;
+      }
+    }
+    if (!this.userHasManuallyScrolled && currentTimeUs > this.viewStartUs + range * 0.9) {
       this.viewStartUs = currentTimeUs - range * 0.5;
       this.viewEndUs = this.viewStartUs + range;
     }
@@ -233,7 +240,7 @@ export class Timeline {
     const rangeUs = this.viewEndUs - this.viewStartUs;
     const rangeS = rangeUs / 1_000_000;
     // Choose tick interval
-    const intervals = [0.1, 0.5, 1, 2, 5, 10, 30, 60];
+    const intervals = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60];
     let tickS = 1;
     for (const iv of intervals) {
       if (rangeS / iv < 20) { tickS = iv; break; }
@@ -241,6 +248,7 @@ export class Timeline {
     const startTick = Math.ceil(this.viewStartUs / (tickS * 1_000_000));
     const endTick = Math.floor(this.viewEndUs / (tickS * 1_000_000));
 
+    const decimals = tickS < 0.01 ? 3 : tickS < 0.1 ? 2 : tickS < 1 ? 1 : 0;
     ctx.font = "9px monospace";
     ctx.fillStyle = "#aaa";
     ctx.textAlign = "center";
@@ -253,8 +261,19 @@ export class Timeline {
       ctx.moveTo(x, contentH);
       ctx.lineTo(x, contentH + 4);
       ctx.stroke();
-      ctx.fillText(`${(tUs / 1_000_000).toFixed(tickS < 1 ? 1 : 0)}s`, x, contentH + 4);
+      ctx.fillText(`${(tUs / 1_000_000).toFixed(decimals)}s`, x, contentH + 4);
     }
+
+    // Zoom indicator
+    const zoomRangeMs = rangeUs / 1_000;
+    const zoomLabel = zoomRangeMs < 1000
+      ? `${zoomRangeMs.toFixed(zoomRangeMs < 10 ? 1 : 0)}ms`
+      : `${(zoomRangeMs / 1000).toFixed(1)}s`;
+    ctx.font = "9px monospace";
+    ctx.fillStyle = "#666";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(zoomLabel, W - 4, H - 2);
   }
 
   private drawCursor(
@@ -314,23 +333,24 @@ export class Timeline {
       this.hoveredEvent = null;
     });
 
-    // Wheel: horizontal scroll; ctrl+wheel: zoom
+    // Wheel: zoom around mouse; shift+wheel: horizontal scroll
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
+      this.userHasManuallyScrolled = true;
       const range = this.viewEndUs - this.viewStartUs;
-      if (e.ctrlKey || e.metaKey) {
-        // Zoom around mouse position
-        const mouseTime = this.xToTime(e.offsetX);
-        const factor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-        const newRange = Math.max(100_000, Math.min(range * factor, 600_000_000));
-        const mouseFrac = (mouseTime - this.viewStartUs) / range;
-        this.viewStartUs = mouseTime - mouseFrac * newRange;
-        this.viewEndUs = this.viewStartUs + newRange;
-      } else {
+      if (e.shiftKey) {
         // Horizontal scroll
         const shift = range * 0.1 * (e.deltaY > 0 ? 1 : -1);
         this.viewStartUs += shift;
         this.viewEndUs += shift;
+      } else {
+        // Zoom around mouse position (plain wheel + ctrl/pinch)
+        const mouseTime = this.xToTime(e.offsetX);
+        const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+        const newRange = Math.max(1_000, Math.min(range * factor, 600_000_000));
+        const mouseFrac = (mouseTime - this.viewStartUs) / range;
+        this.viewStartUs = mouseTime - mouseFrac * newRange;
+        this.viewEndUs = this.viewStartUs + newRange;
       }
     }, { passive: false });
   }
