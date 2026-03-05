@@ -167,12 +167,40 @@ export class UI {
     speedTitle.textContent = "Speed: ";
     speedGroup.append(speedTitle, this.speedSlider, this.speedLabel);
 
+    // Loss probability slider
+    const lossSlider = document.createElement("input");
+    lossSlider.type = "range";
+    lossSlider.min = "0";
+    lossSlider.max = "100";
+    lossSlider.value = "0";
+    lossSlider.step = "1";
+    lossSlider.style.width = "80px";
+    lossSlider.style.verticalAlign = "middle";
+
+    const lossLabel = document.createElement("span");
+    lossLabel.textContent = "0%";
+    lossLabel.style.marginLeft = "4px";
+    lossLabel.style.minWidth = "32px";
+    lossLabel.style.display = "inline-block";
+
+    lossSlider.addEventListener("input", () => {
+      const val = parseInt(lossSlider.value);
+      this.sim.net.lossProbability = val / 100;
+      lossLabel.textContent = val + "%";
+    });
+
+    const lossGroup = document.createElement("span");
+    const lossTitle = document.createElement("span");
+    lossTitle.textContent = "Message loss: ";
+    lossGroup.append(lossTitle, lossSlider, lossLabel);
+
     const seedGroup = document.createElement("span");
     seedGroup.append(seedLabel, this.seedInput, applyBtn);
 
     bar.append(
       this.playBtn,
       this.sep(), speedGroup,
+      this.sep(), lossGroup,
       this.sep(), this.addNodeBtn,
       this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay,
       this.sep(), seedGroup,
