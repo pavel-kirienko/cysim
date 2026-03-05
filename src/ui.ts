@@ -111,7 +111,7 @@ export class UI {
   }
 
   private buildTopBar(bar: HTMLElement): void {
-    this.playBtn = this.btn("Resume/Pause", "");
+    this.playBtn = this.btn("Resume/Pause\n[space bar]", "");
     this.playBtn.style.width = "90px";
     this.updatePlayBtn();
     const togglePlay = () => {

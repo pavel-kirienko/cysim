@@ -70,6 +70,72 @@ export class Viewport {
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+
+    // Touch: one-finger pan, two-finger pinch-zoom
+    let touchPanning = false;
+    let touchStartX = 0, touchStartY = 0, touchStartPanX = 0, touchStartPanY = 0;
+    let pinching = false;
+    let pinchStartDist = 0;
+    let pinchStartZoom = 0;
+    let pinchStartPanX = 0, pinchStartPanY = 0;
+    let pinchMidX = 0, pinchMidY = 0;
+
+    container.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        touchPanning = false;
+        pinching = true;
+        const rect = container.getBoundingClientRect();
+        const t0 = e.touches[0], t1 = e.touches[1];
+        const dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
+        pinchStartDist = Math.sqrt(dx * dx + dy * dy);
+        pinchStartZoom = this.zoom;
+        pinchStartPanX = this.panX;
+        pinchStartPanY = this.panY;
+        pinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
+        pinchMidY = (t0.clientY + t1.clientY) / 2 - rect.top;
+      } else if (e.touches.length === 1 && !pinching) {
+        e.preventDefault();
+        touchPanning = true;
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchStartPanX = this.panX;
+        touchStartPanY = this.panY;
+      }
+    }, { passive: false });
+
+    container.addEventListener("touchmove", (e) => {
+      if (pinching && e.touches.length >= 2) {
+        e.preventDefault();
+        const rect = container.getBoundingClientRect();
+        const t0 = e.touches[0], t1 = e.touches[1];
+        const dx = t1.clientX - t0.clientX, dy = t1.clientY - t0.clientY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const scale = dist / pinchStartDist;
+        const newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStartZoom * scale));
+        const zoomRatio = newZoom / pinchStartZoom;
+
+        // New midpoint for simultaneous pan
+        const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+        const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+
+        // Zoom around original midpoint, then shift by midpoint movement
+        this.panX = pinchStartPanX + (midX - pinchMidX) - (zoomRatio - 1) * (pinchMidX - pinchStartPanX);
+        this.panY = pinchStartPanY + (midY - pinchMidY) - (zoomRatio - 1) * (pinchMidY - pinchStartPanY);
+        this.zoom = newZoom;
+        this.applyToWrapper();
+      } else if (touchPanning && e.touches.length === 1) {
+        e.preventDefault();
+        this.panX = touchStartPanX + (e.touches[0].clientX - touchStartX);
+        this.panY = touchStartPanY + (e.touches[0].clientY - touchStartY);
+        this.applyToWrapper();
+      }
+    }, { passive: false });
+
+    container.addEventListener("touchend", (e) => {
+      if (e.touches.length < 2) pinching = false;
+      if (e.touches.length === 0) touchPanning = false;
+    });
   }
 
   setWrapper(wrapper: HTMLElement): void {

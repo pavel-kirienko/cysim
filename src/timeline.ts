@@ -600,6 +600,93 @@ export class Timeline {
         this.viewEndUs = this.viewStartUs + newRange;
       }
     }, { passive: false });
+
+    // Touch: one-finger horizontal pan, two-finger pinch-zoom
+    let touchPanStartX = 0;
+    let touchPanViewStart = 0;
+    let touchPanViewEnd = 0;
+    let touchPanning = false;
+    let touchStartX = 0; // for tap detection
+    let tlPinching = false;
+    let tlPinchStartDist = 0;
+    let tlPinchMidX = 0;
+    let tlPinchMidTime = 0;
+    let tlPinchMidFrac = 0;
+    let tlPinchViewStart = 0;
+    let tlPinchViewEnd = 0;
+
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        touchPanning = false;
+        tlPinching = true;
+        const t0 = e.touches[0], t1 = e.touches[1];
+        tlPinchStartDist = Math.abs(t1.clientX - t0.clientX) || 1;
+        const rect = canvas.getBoundingClientRect();
+        tlPinchMidX = (t0.clientX + t1.clientX) / 2 - rect.left;
+        tlPinchViewStart = this.viewStartUs;
+        tlPinchViewEnd = this.viewEndUs;
+        const plotW = this.logicalW - GUTTER_W;
+        tlPinchMidFrac = plotW > 0 ? (tlPinchMidX - GUTTER_W) / plotW : 0.5;
+        tlPinchMidTime = this.viewStartUs + tlPinchMidFrac * (this.viewEndUs - this.viewStartUs);
+      } else if (e.touches.length === 1 && !tlPinching) {
+        e.preventDefault();
+        touchPanning = true;
+        const rect = canvas.getBoundingClientRect();
+        touchPanStartX = e.touches[0].clientX - rect.left;
+        touchStartX = touchPanStartX;
+        touchPanViewStart = this.viewStartUs;
+        touchPanViewEnd = this.viewEndUs;
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchmove", (e) => {
+      if (tlPinching && e.touches.length >= 2) {
+        e.preventDefault();
+        const t0 = e.touches[0], t1 = e.touches[1];
+        const dist = Math.abs(t1.clientX - t0.clientX) || 1;
+        const scale = tlPinchStartDist / dist; // inverse: spread fingers = zoom in = smaller range
+
+        const origRange = tlPinchViewEnd - tlPinchViewStart;
+        const newRange = Math.max(1_000, Math.min(origRange * scale, 600_000_000));
+
+        this.viewStartUs = tlPinchMidTime - tlPinchMidFrac * newRange;
+        this.viewEndUs = this.viewStartUs + newRange;
+        this.userHasManuallyScrolled = true;
+      } else if (touchPanning && e.touches.length === 1) {
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const x = e.touches[0].clientX - rect.left;
+        const dx = x - touchPanStartX;
+        const plotW = this.logicalW - GUTTER_W;
+        if (plotW > 0) {
+          const range = touchPanViewEnd - touchPanViewStart;
+          const shift = -(dx / plotW) * range;
+          this.viewStartUs = touchPanViewStart + shift;
+          this.viewEndUs = touchPanViewEnd + shift;
+          this.userHasManuallyScrolled = true;
+        }
+      }
+    }, { passive: false });
+
+    canvas.addEventListener("touchend", (e) => {
+      if (e.touches.length < 2) tlPinching = false;
+      if (e.touches.length === 0) {
+        if (touchPanning) {
+          // Tap detection: if barely moved, treat as click → navigate
+          const rect = canvas.getBoundingClientRect();
+          const endX = e.changedTouches[0].clientX - rect.left;
+          if (Math.abs(endX - touchStartX) < 5) {
+            if (this.isPlaying?.()) {
+              this.showWarning(endX);
+            } else {
+              this.navigateToX(endX);
+            }
+          }
+        }
+        touchPanning = false;
+      }
+    });
   }
 
   private navigateToX(x: number): void {
