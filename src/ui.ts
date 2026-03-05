@@ -578,12 +578,14 @@ export class UI {
       }
     }
 
-    // Build hue palette: evenly spaced, avoiding yellow (stale) zone ~50-70
+    // Build hue palette: avoid green (~80-160) and yellow/stale zone (~50-80)
+    // Usable range: 160-410 (wrapping), i.e. cyan→blue→purple→red→orange
     const groupCount = nextGroupId;
     const groupHues: number[] = [];
+    const usableStart = 160, usableRange = 250; // 160..410 (mod 360)
     for (let i = 0; i < groupCount; i++) {
-      // Spread across 0-360 starting at red, with golden-angle spacing for max distinction
-      groupHues.push((i * 137.508 + 0) % 360);
+      const hue = (usableStart + (i * 137.508) % usableRange) % 360;
+      groupHues.push(hue);
     }
 
     // 4. Detect staleness: per topic, find max lage; cells with lage < maxLage get yellow
@@ -655,7 +657,8 @@ export class UI {
             td.title = `CONFLICT: ${info.reasons.join("; ")}\n${base}`;
           } else if (staleCells.has(k)) {
             td.className = "cell-stale";
-            td.title = base;
+            const ml = topicMaxLage.get(hash) ?? 0;
+            td.title = `STALE: lage ${t.lage} behind max ${ml} across nodes\n${base}`;
           } else {
             td.title = base;
           }
