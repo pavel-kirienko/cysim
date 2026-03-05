@@ -5,7 +5,7 @@ import type { Topic } from "../../src/types.js";
 
 function makeTopic(name: string): Topic {
   const hash = topicHash(name);
-  return { name, hash, evictions: 0, tsCreatedUs: 0 };
+  return { name, hash, evictions: 0, tsCreatedUs: 0, sortOrder: 0 };
 }
 
 describe("makeNode", () => {

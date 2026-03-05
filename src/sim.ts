@@ -486,7 +486,7 @@ export class Simulation {
     for (const [id, n] of state.nodes) {
       const topics = new Map<bigint, Topic>();
       for (const [h, t] of n.topics) {
-        topics.set(h, { ...t });
+        topics.set(h, { ...t, sortOrder: t.sortOrder ?? t.tsCreatedUs });
       }
       this.nodes.set(id, {
         nodeId: n.nodeId,
@@ -597,7 +597,7 @@ export class Simulation {
       tsCreated = this.nowUs - pow2us(clamped) * 1_000_000;
     }
 
-    const topic: Topic = { name, hash, evictions: ev, tsCreatedUs: tsCreated };
+    const topic: Topic = { name, hash, evictions: ev, tsCreatedUs: tsCreated, sortOrder: tsCreated };
     nodeAddTopic(node, topic);
     this.topicAllocate(node, topic, topic.evictions, this.nowUs);
     this.gossipBegin(node);
@@ -1333,7 +1333,7 @@ export class Simulation {
 
   private snapNode(node: Node): NodeSnapshot {
     const topics: TopicSnap[] = [];
-    const sorted = [...node.topics.values()].sort((a, b) => a.tsCreatedUs - b.tsCreatedUs);
+    const sorted = [...node.topics.values()].sort((a, b) => a.sortOrder - b.sortOrder);
     for (const t of sorted) {
       topics.push({
         name: t.name,
@@ -1342,6 +1342,7 @@ export class Simulation {
         subjectId: topicSubjectId(t),
         lage: topicLage(t.tsCreatedUs, this.nowUs),
         tsCreatedUs: t.tsCreatedUs,
+        sortOrder: t.sortOrder,
       });
     }
 

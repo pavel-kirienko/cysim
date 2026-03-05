@@ -12,6 +12,7 @@ export interface Topic {
   hash: bigint;
   evictions: number;
   tsCreatedUs: number;
+  sortOrder: number;
 }
 
 export interface GossipPeer {
@@ -59,6 +60,7 @@ export interface TopicSnap {
   subjectId: number;
   lage: number;
   tsCreatedUs: number;
+  sortOrder: number;
 }
 
 export interface PeerSnap {

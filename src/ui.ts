@@ -821,11 +821,11 @@ export class UI {
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    // Sort topics by earliest tsCreatedUs ascending (oldest on top, newest at bottom)
+    // Sort topics by earliest sortOrder ascending (oldest on top, newest at bottom)
     const sortedTopics = [...matrix.entries()].sort((a, b) => {
       let minA = Infinity, minB = Infinity;
-      for (const t of a[1].cells.values()) if (t.tsCreatedUs < minA) minA = t.tsCreatedUs;
-      for (const t of b[1].cells.values()) if (t.tsCreatedUs < minB) minB = t.tsCreatedUs;
+      for (const t of a[1].cells.values()) if (t.sortOrder < minA) minA = t.sortOrder;
+      for (const t of b[1].cells.values()) if (t.sortOrder < minB) minB = t.sortOrder;
       return minA - minB;
     });
     for (const [hash, row] of sortedTopics) {
