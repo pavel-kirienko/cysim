@@ -136,7 +136,7 @@ export class NodeBlock {
         if (ts.hash === nxtH) { nextTopicName = ts.name; break; }
       }
     }
-    html += `<div>next tx: ${nextTopicName}</div>`;
+    html += `<div>next to gossip: ${nextTopicName}</div>`;
 
     if (snap.online && snap.lastUrgentUs > 0) {
       const ago = (timeUs - snap.lastUrgentUs) / 1_000_000;

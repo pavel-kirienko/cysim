@@ -377,6 +377,25 @@ export class Timeline {
       ctx.fillRect(x0, y + h - padding - barH, x1 - x0, barH);
     }
 
+    // 1-second moving average line (centered window of 10 bins)
+    const MA_BINS = 20;
+    const half = 10;
+    ctx.beginPath();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+    ctx.lineWidth = 1.5;
+    let started = false;
+    for (let bin = binStart; bin <= binEnd; bin++) {
+      let sum = 0;
+      for (let j = bin - half; j < bin - half + MA_BINS; j++) {
+        sum += binCounts.get(j) || 0;
+      }
+      const avg = sum / MA_BINS;
+      const x = this.timeToX((bin + 0.5) * NET_BIN_US);
+      const ly = y + h - padding - (avg / maxCount) * chartH;
+      if (!started) { ctx.moveTo(x, ly); started = true; } else { ctx.lineTo(x, ly); }
+    }
+    ctx.stroke();
+
     ctx.restore();
   }
 
@@ -389,6 +408,19 @@ export class Timeline {
       if (ev.timeUs >= binStart && ev.timeUs < binEnd) count++;
     }
     return count * (1_000_000 / NET_BIN_US); // scale to msg/s
+  }
+
+  private getNetMsgRateAvg(timeUs: number): number {
+    const MA_BINS = 20;
+    const half = 10;
+    const centerBin = Math.floor(timeUs / NET_BIN_US);
+    let total = 0;
+    for (const ev of this.eventLog.events) {
+      if (!NET_MSG_CODES.has(ev.code)) continue;
+      const bin = Math.floor(ev.timeUs / NET_BIN_US);
+      if (bin >= centerBin - half && bin < centerBin - half + MA_BINS) total++;
+    }
+    return (total / MA_BINS) * (1_000_000 / NET_BIN_US);
   }
 
   private drawTimeAxis(
@@ -603,10 +635,12 @@ export class Timeline {
     if (y < ROW_H) {
       const timeUs = this.xToTime(x);
       const rate = this.getNetMsgRate(timeUs);
-      this.tooltip.textContent = `${rate.toFixed(0)} msg/s`;
+      const avg = this.getNetMsgRateAvg(timeUs);
+      this.tooltip.style.textAlign = "right";
+      this.tooltip.innerHTML = `${rate.toFixed(0)} msg/s<br>avg ${avg.toFixed(0)} msg/s`;
       this.tooltip.style.display = "block";
       const rect = this.canvas.parentElement!.getBoundingClientRect();
-      this.tooltip.style.left = Math.min(x + 12, rect.width - 80) + "px";
+      this.tooltip.style.left = Math.min(x + 12, rect.width - 100) + "px";
       this.tooltip.style.top = Math.max(0, y - 20) + "px";
       this.hoveredEvents = [];
       return;
@@ -702,6 +736,7 @@ export class Timeline {
 
   private showTooltip(evs: TimelineEvent[], x: number, y: number): void {
     const text = evs.map(ev => this.formatEvent(ev)).join("\n");
+    this.tooltip.style.textAlign = "";
     this.tooltip.textContent = text;
     this.tooltip.style.display = "block";
     const rect = this.canvas.parentElement!.getBoundingClientRect();

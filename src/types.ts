@@ -58,6 +58,7 @@ export interface TopicSnap {
   evictions: number;
   subjectId: number;
   lage: number;
+  tsCreatedUs: number;
 }
 
 export interface PeerSnap {

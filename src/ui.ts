@@ -827,12 +827,12 @@ export class UI {
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    // Sort topics by max lage descending (oldest on top)
+    // Sort topics by earliest tsCreatedUs ascending (oldest on top, newest at bottom)
     const sortedTopics = [...matrix.entries()].sort((a, b) => {
-      const la = topicMaxLage.get(a[0]) ?? 0;
-      const lb = topicMaxLage.get(b[0]) ?? 0;
-      if (lb !== la) return lb - la;
-      return a[1].name.localeCompare(b[1].name);
+      let minA = Infinity, minB = Infinity;
+      for (const t of a[1].cells.values()) if (t.tsCreatedUs < minA) minA = t.tsCreatedUs;
+      for (const t of b[1].cells.values()) if (t.tsCreatedUs < minB) minB = t.tsCreatedUs;
+      return minA - minB;
     });
     for (const [hash, row] of sortedTopics) {
       const tr = document.createElement("tr");

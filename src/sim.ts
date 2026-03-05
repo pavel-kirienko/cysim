@@ -1333,7 +1333,7 @@ export class Simulation {
 
   private snapNode(node: Node): NodeSnapshot {
     const topics: TopicSnap[] = [];
-    const sorted = [...node.topics.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...node.topics.values()].sort((a, b) => a.tsCreatedUs - b.tsCreatedUs);
     for (const t of sorted) {
       topics.push({
         name: t.name,
@@ -1341,6 +1341,7 @@ export class Simulation {
         evictions: t.evictions,
         subjectId: topicSubjectId(t),
         lage: topicLage(t.tsCreatedUs, this.nowUs),
+        tsCreatedUs: t.tsCreatedUs,
       });
     }
 
