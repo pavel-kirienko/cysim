@@ -5,7 +5,7 @@
 import { NodeSnapshot, TopicSnap, PeerSnap } from "./types.js";
 import { GOSSIP_PEER_ELIGIBLE } from "./constants.js";
 
-const BOX_WIDTH = 260;
+const BOX_WIDTH = 280;
 
 export interface NodeBlockCallbacks {
   onPartitionToggle(nid: number): void;
@@ -46,7 +46,7 @@ export class NodeBlock {
     this.headerEl.className = "nb-header";
 
     const idSpan = document.createElement("span");
-    idSpan.textContent = `N${nodeId}`;
+    idSpan.textContent = `Node${nodeId}`;
     idSpan.style.fontWeight = "bold";
 
     this.statusLabel = document.createElement("span");
@@ -104,7 +104,7 @@ export class NodeBlock {
     this.statusLabel.style.color = snap.online ? "#8f8" : "#f88";
 
     // Partition button
-    this.partBtn.textContent = snap.partitionSet;
+    this.partBtn.textContent = `Partition ${snap.partitionSet}`;
     this.partBtn.style.background = snap.partitionSet === "A" ? "#3498db" : "#e67e22";
 
     // Border color for conflict
@@ -230,7 +230,7 @@ export class NodeBlock {
       const td1 = document.createElement("td");
       const td2 = document.createElement("td");
       if (p) {
-        td1.textContent = `N${p.nodeId}`;
+        td1.textContent = `Node${p.nodeId}`;
         const age = (timeUs - p.lastSeenUs) / 1_000_000;
         td2.textContent = `${age.toFixed(1)}s`;
         const fresh = (timeUs - p.lastSeenUs) < GOSSIP_PEER_ELIGIBLE;
@@ -253,6 +253,7 @@ export class NodeBlock {
     this.headerEl.addEventListener("mousedown", (e) => {
       if ((e.target as HTMLElement).tagName === "BUTTON") return;
       e.preventDefault();
+      e.stopPropagation();
       dragging = true;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -283,6 +284,7 @@ export class NodeBlock {
 
     handle.addEventListener("mousedown", (e) => {
       e.preventDefault();
+      e.stopPropagation();
       resizing = true;
       startY = e.clientY;
       startH = this.topicsContainer.offsetHeight;

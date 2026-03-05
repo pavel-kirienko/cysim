@@ -15,7 +15,7 @@ const C_BROADCAST   = "#f1c40f"; // yellow expanding circle
 const C_UNICAST     = "#e67e22";
 const C_FORWARD     = "#9b59b6";
 
-const BOX_WIDTH     = 260;
+const BOX_WIDTH     = 280;
 
 interface ActiveArrow {
   startUs: number;
@@ -510,7 +510,7 @@ export class Renderer {
     const d = ev.details || {};
     const type = ev.event === "unicast" ? "Unicast" : "Forward";
     const delayMs = ((d.delayUs as number) || 0) / 1000;
-    const lines = [`${type}  N${ev.src} → N${ev.dst}`];
+    const lines = [`${type}  Node${ev.src} → Node${ev.dst}`];
     if (d.name) lines.push(`Topic: ${d.name}`);
     if (d.subjectId !== undefined) lines.push(`Subject: ${d.subjectId}`);
     if (d.evictions !== undefined) lines.push(`Evictions: ${d.evictions}`);
@@ -522,7 +522,7 @@ export class Renderer {
 
   private formatBroadcast(bc: ActiveBroadcast): string {
     const d = bc.event.details || {};
-    const lines = [`Broadcast  N${bc.src}`];
+    const lines = [`Broadcast  Node${bc.src}`];
     if (d.name) lines.push(`Topic: ${d.name}`);
     if (d.subjectId !== undefined) lines.push(`Subject: ${d.subjectId}`);
     if (d.evictions !== undefined) lines.push(`Evictions: ${d.evictions}`);

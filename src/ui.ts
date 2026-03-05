@@ -434,7 +434,7 @@ export class UI {
     `;
 
     const title = document.createElement("div");
-    title.textContent = `Add topic to N${nodeId}`;
+    title.textContent = `Add topic to Node${nodeId}`;
     title.style.fontWeight = "bold";
     title.style.marginBottom = "2px";
 
@@ -702,7 +702,7 @@ export class UI {
       for (const [hash, evMap] of hashToEvByNode) {
         const vals = new Set(evMap.values());
         if (vals.size > 1) {
-          const detail = [...evMap.entries()].map(([n, e]) => `N${n}=${e}`).join(", ");
+          const detail = [...evMap.entries()].map(([n, e]) => `Node${n}=${e}`).join(", ");
           const cells = [...evMap.keys()].map(nid => ({ hash, nid }));
           assignGroup(cells, `eviction count diverged (${detail})`);
         }
@@ -714,7 +714,7 @@ export class UI {
           const cells: { hash: bigint; nid: number }[] = [];
           for (const [h, nids] of hashMap) {
             const row = matrix.get(h);
-            names.push(`"${row?.name ?? "?"}" on N${nids.join(",N")}`);
+            names.push(`"${row?.name ?? "?"}" on Node${nids.join(",Node")}`);
             for (const nid of nids) cells.push({ hash: h, nid });
           }
           assignGroup(cells, `subject ${sid} collision: ${names.join(" vs ")}`);
@@ -760,7 +760,7 @@ export class UI {
     headerRow.appendChild(thTopic);
     for (const nid of nodeIds) {
       const th = document.createElement("th");
-      th.textContent = `N${nid}`;
+      th.textContent = `Node${nid}`;
       th.addEventListener("mouseenter", () => { this.renderer.highlightedNodeId = nid; });
       headerRow.appendChild(th);
     }

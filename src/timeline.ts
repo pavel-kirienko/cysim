@@ -179,7 +179,7 @@ export class Timeline {
       if (y > contentH) break;
       const active = this.activeNodeIds.has(this.nodeIds[i]);
       ctx.fillStyle = active ? "#888" : "#444";
-      ctx.fillText(`N${this.nodeIds[i]}`, GUTTER_W - 4, y);
+      ctx.fillText(`Node${this.nodeIds[i]}`, GUTTER_W - 4, y);
     }
 
     // Convergence row label
@@ -690,11 +690,11 @@ export class Timeline {
   private formatEvent(ev: TimelineEvent): string {
     const name = CODE_NAMES[ev.code];
     const d = ev.details;
-    let text = `${ev.code} - ${name}  N${ev.nodeId}  ${(ev.timeUs / 1_000_000).toFixed(3)}s`;
+    let text = `${ev.code} - ${name}  Node${ev.nodeId}  ${(ev.timeUs / 1_000_000).toFixed(3)}s`;
     if (d.name) text += `  Topic: ${d.name}`;
     if (d.evictions !== undefined) text += `  Evictions: ${d.evictions}`;
     if (d.lage !== undefined) text += `  Lage: ${d.lage}`;
-    if (d.dst !== null && d.dst !== undefined) text += `  Dst: N${d.dst}`;
+    if (d.dst !== null && d.dst !== undefined) text += `  Dst: Node${d.dst}`;
     if (d.type) text += `  Type: ${d.type}`;
     if (d.local_won !== undefined) text += `  Local won: ${d.local_won}`;
     return text;
@@ -712,7 +712,7 @@ export class Timeline {
   private showArrowTooltip(ev: TimelineEvent, x: number, y: number): void {
     const name = CODE_NAMES[ev.code];
     const d = ev.details;
-    let text = `Arrow: ${ev.code} - ${name}\nFrom: N${ev.nodeId}`;
+    let text = `Arrow: ${ev.code} - ${name}\nFrom: Node${ev.nodeId}`;
     if (d.name) text += `\nTopic: ${d.name}`;
     if (d.evictions !== undefined) text += `\nEvictions: ${d.evictions}`;
     if (d.lage !== undefined) text += `\nLage: ${d.lage}`;
