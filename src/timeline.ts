@@ -527,7 +527,7 @@ export class Timeline {
   private setupInteraction(): void {
     const canvas = this.canvas;
 
-    canvas.addEventListener("mousedown", (e) => {
+    canvas.addEventListener("pointerdown", (e) => {
       if (e.button === 0 || e.button === 1) {
         e.preventDefault();
         // Check if clicking on the cursor triangle (bottom axis area, near cursor X)
@@ -535,16 +535,18 @@ export class Timeline {
         if (!this.isPlaying?.() && e.offsetY >= contentH && Math.abs(e.offsetX - this.lastCursorX) < 10) {
           this.draggingCursor = true;
           canvas.style.cursor = "ew-resize";
+          canvas.setPointerCapture(e.pointerId);
         } else {
           this.panning = true;
           this.panLastX = e.offsetX;
           this.panStartX = e.offsetX;
           canvas.style.cursor = "grabbing";
+          canvas.setPointerCapture(e.pointerId);
         }
       }
     });
 
-    canvas.addEventListener("mousemove", (e) => {
+    canvas.addEventListener("pointermove", (e) => {
       if (this.draggingCursor) {
         this.navigateToX(e.offsetX);
       } else if (this.panning) {
@@ -563,10 +565,11 @@ export class Timeline {
       }
     });
 
-    canvas.addEventListener("mouseup", (e) => {
+    canvas.addEventListener("pointerup", (e) => {
       if (this.draggingCursor) {
         this.draggingCursor = false;
         canvas.style.cursor = "";
+        canvas.releasePointerCapture(e.pointerId);
       } else if (this.panning) {
         // If barely moved, treat as a click → navigate cursor
         if (Math.abs(e.offsetX - this.panStartX) < 3) {
@@ -578,19 +581,15 @@ export class Timeline {
         }
         this.panning = false;
         canvas.style.cursor = "";
+        canvas.releasePointerCapture(e.pointerId);
       }
     });
 
-    canvas.addEventListener("mouseleave", () => {
-      if (this.draggingCursor) {
-        this.draggingCursor = false;
-        canvas.style.cursor = "";
-      } else if (this.panning) {
-        this.panning = false;
-        canvas.style.cursor = "";
+    canvas.addEventListener("pointerleave", () => {
+      if (!this.draggingCursor && !this.panning) {
+        this.tooltip.style.display = "none";
+        this.hoveredEvents = [];
       }
-      this.tooltip.style.display = "none";
-      this.hoveredEvents = [];
     });
 
     // Prevent context menu on middle-click
