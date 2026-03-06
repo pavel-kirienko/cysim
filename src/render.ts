@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { EventRecord, NodeSnapshot } from "./types.js";
+import { EventLog } from "./event-log.js";
 import {
   MSG_PERSIST_US, BROADCAST_PERSIST_US, CONFLICT_FLASH_US,
   PROPAGATION_SPEED,
@@ -76,6 +77,50 @@ export class Renderer {
     this.activeArrows = [];
     this.activeBroadcasts = [];
     this.activeConflicts.clear();
+  }
+
+  rebuildAnimationsFromLog(eventLog: EventLog, currentTimeUs: number): void {
+    this.activeArrows = [];
+    this.activeBroadcasts = [];
+    this.activeConflicts.clear();
+
+    for (const ev of eventLog.events) {
+      if (ev.timeUs > currentTimeUs) continue;
+
+      if (ev.code === "GU" || ev.code === "GF") {
+        const delayUs = (ev.details.delayUs as number) || 0;
+        if (delayUs <= 0) continue;
+        const dst = ev.details.dst as number;
+        if (dst === undefined || dst === null) continue;
+        const arriveUs = ev.timeUs + delayUs;
+        const expireUs = arriveUs + MSG_PERSIST_US;
+        if (currentTimeUs >= expireUs) continue;
+
+        const rec: EventRecord = {
+          timeUs: ev.timeUs,
+          event: ev.code === "GU" ? "unicast" : "forward",
+          src: ev.nodeId,
+          dst,
+          topicHash: ev.topicHash,
+          details: ev.details,
+        };
+        this.activeArrows.push({ startUs: ev.timeUs, arriveUs, expireUs, event: rec });
+
+      } else if (ev.code === "GB") {
+        const expireUs = ev.timeUs + BROADCAST_PERSIST_US;
+        if (currentTimeUs >= expireUs) continue;
+
+        const rec: EventRecord = {
+          timeUs: ev.timeUs,
+          event: "broadcast",
+          src: ev.nodeId,
+          dst: null,
+          topicHash: ev.topicHash,
+          details: ev.details,
+        };
+        this.activeBroadcasts.push({ startUs: ev.timeUs, expireUs, src: ev.nodeId, event: rec });
+      }
+    }
   }
 
   layoutNodes(nodeIds: number[]): void {

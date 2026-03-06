@@ -175,7 +175,7 @@ function navigateTo(index: number): void {
   sim.loadState(history[index]);
   historyIndex = index;
   timeline.setCurrentIndex(historyIndex);
-  renderer.clearAnimations();
+  renderer.rebuildAnimationsFromLog(eventLog, sim.nowUs);
   renderCurrent();
 }
 
