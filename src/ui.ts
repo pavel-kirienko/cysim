@@ -253,10 +253,15 @@ export class UI {
     const ghLink = document.createElement("a");
     ghLink.href = "https://github.com/pavel-kirienko/gerasim";
     ghLink.target = "_blank";
-    ghLink.textContent = "Sources & issues on GitHub";
+    ghLink.rel = "noopener noreferrer";
+    ghLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.open(ghLink.href, "_blank", "noopener,noreferrer");
+    });
+    ghLink.innerHTML = "Sources &amp; issues on GitHub &#x29C9;";
     ghLink.style.fontSize = "11px";
-    ghLink.style.color = "#aaa";
-    ghLink.style.textDecoration = "none";
+    ghLink.style.color = "#f7941d";
+    ghLink.style.textDecoration = "underline";
     ghLink.style.display = "block";
     ghLink.style.textAlign = "center";
     ghLink.style.marginBottom = "12px";
