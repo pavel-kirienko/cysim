@@ -111,6 +111,17 @@ export class EventLog {
     this.nextId = this.events.length > 0 ? this.events[this.events.length - 1].id + 1 : 0;
   }
 
+  getRxRate(nodeId: number, timeUs: number, windowUs: number): number {
+    let count = 0;
+    const start = timeUs - windowUs;
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const e = this.events[i];
+      if (e.timeUs < start) break;
+      if (e.timeUs <= timeUs && e.code === "GR" && e.nodeId === nodeId) count++;
+    }
+    return count / (windowUs / 1_000_000);
+  }
+
   clear(): void {
     this.events = [];
     this.nextId = 0;

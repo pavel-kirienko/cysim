@@ -273,6 +273,7 @@ function init(): void {
   const topicPanel = document.getElementById("topic-panel")!;
   ui = new UI(sim, renderer, viewport, topBar, sidePanel, overlayContainer, topicPanel);
 
+  ui.setEventLog(eventLog);
   ui.setTimeline(timeline);
   ui.onRelayout = relayout;
   ui.onApplyConfig = resetWithConfig;

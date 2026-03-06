@@ -9,6 +9,7 @@ import { Renderer } from "./render.js";
 import { Viewport } from "./viewport.js";
 import { NodeBlock, NodeBlockCallbacks } from "./node-block.js";
 import { Timeline } from "./timeline.js";
+import { EventLog } from "./event-log.js";
 
 // Colors for legend
 const C_BROADCAST = "#f1c40f";
@@ -120,6 +121,7 @@ export class UI {
   private renderer: Renderer;
   private viewport: Viewport;
   private overlayContainer: HTMLElement;
+  private eventLog: EventLog | null = null;
   private nodeBlocks: Map<number, NodeBlock> = new Map();
 
   // Topic panel
@@ -142,6 +144,7 @@ export class UI {
   private timeDisplay!: HTMLSpanElement;
   private historyDisplay!: HTMLSpanElement;
   private convergenceDisplay!: HTMLSpanElement;
+  private arrivalAvgDisplay!: HTMLSpanElement;
   private configTextarea!: HTMLTextAreaElement;
   private configPre!: HTMLPreElement;
 
@@ -209,6 +212,10 @@ export class UI {
     this.hoverTopicHash = null;
     this.focusedTopicName = null;
     this.statusBar.textContent = "";
+  }
+
+  setEventLog(el: EventLog): void {
+    this.eventLog = el;
   }
 
   setTimeline(tl: Timeline): void {
@@ -299,6 +306,11 @@ export class UI {
     this.convergenceDisplay.style.marginLeft = "12px";
     this.convergenceDisplay.style.fontWeight = "bold";
 
+    this.arrivalAvgDisplay = document.createElement("span");
+    this.arrivalAvgDisplay.style.marginLeft = "12px";
+    this.arrivalAvgDisplay.style.fontSize = "11px";
+    this.arrivalAvgDisplay.style.color = "#fff";
+
     const speedGroup = document.createElement("span");
     const speedTitle = document.createElement("span");
     speedTitle.textContent = "Speed: ";
@@ -339,7 +351,7 @@ export class UI {
       this.sep(), speedGroup,
       this.sep(), lossGroup,
       this.sep(), this.addNodeBtn, fitBtn,
-      this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay,
+      this.sep(), this.timeDisplay, this.historyDisplay, this.convergenceDisplay, this.arrivalAvgDisplay,
     );
   }
 
@@ -513,6 +525,20 @@ export class UI {
     this.convergenceDisplay.textContent = `Converged: ${conv ? "YES" : "NO"}`;
     this.convergenceDisplay.style.color = conv ? C_CONVERGED : C_DIVERGED;
 
+    // Average arrival rate across all online nodes
+    if (this.eventLog) {
+      let sum = 0;
+      let count = 0;
+      for (const [nid, snap] of snaps) {
+        if (snap.online) {
+          sum += this.eventLog.getRxRate(nid, timeUs, 6_000_000);
+          count++;
+        }
+      }
+      const avg = count > 0 ? sum / count : 0;
+      this.arrivalAvgDisplay.textContent = `Arrival load avg ${avg.toFixed(1)} msg/s/node`;
+    }
+
     // Update topic view table
     this.updateTopicView(snaps);
 
@@ -554,7 +580,8 @@ export class UI {
       }
 
       block.setMinimalMode(minimal);
-      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid), this.renderer.getPeerFlashIndices(nid));
+      const rxRate = this.eventLog?.getRxRate(nid, timeUs, 6_000_000);
+      block.update(snap, timeUs, this.renderer.isNodeInConflict(nid), this.renderer.getPeerFlashIndices(nid), rxRate);
       block.setPosition(pos.x, pos.y);
       boxSizes.set(nid, block.getSize());
     }

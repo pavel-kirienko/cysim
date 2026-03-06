@@ -104,7 +104,7 @@ export class NodeBlock {
     this.el.append(this.headerEl, this.statusSection, this.topicsContainer, peersContainer, resizeHandle);
   }
 
-  update(snap: NodeSnapshot, timeUs: number, isConflict: boolean, peerFlashIndices?: Set<number>): void {
+  update(snap: NodeSnapshot, timeUs: number, isConflict: boolean, peerFlashIndices?: Set<number>, rxRate?: number): void {
     // Status label
     const status = snap.online ? "ONLINE" : "OFFLINE";
     this.statusLabel.textContent = status;
@@ -126,14 +126,10 @@ export class NodeBlock {
       this.el.style.background = "#2a2a2a";
     }
 
-    // Status lines
-    let html = "";
-    if (snap.online && snap.nextBroadcastUs > 0) {
-      const dt = Math.max(0, snap.nextBroadcastUs - timeUs) / 1_000_000;
-      html += `<div>next broadcast: ${dt.toFixed(2)}s</div>`;
-    } else {
-      html += "<div>next broadcast: --</div>";
-    }
+    // Status lines — compact 2-column grid
+    const bcast = snap.online && snap.nextBroadcastUs > 0
+      ? Math.max(0, snap.nextBroadcastUs - timeUs) / 1_000_000 : -1;
+    const bcastStr = bcast >= 0 ? `${bcast.toFixed(2)}s` : "--";
 
     let nextTopicName = "--";
     const nxtH = snap.gossipUrgentFront ?? snap.gossipQueueFront;
@@ -142,14 +138,19 @@ export class NodeBlock {
         if (ts.hash === nxtH) { nextTopicName = ts.name; break; }
       }
     }
-    html += `<div>next to gossip: ${nextTopicName}</div>`;
 
-    if (snap.online && snap.lastUrgentUs > 0) {
-      const ago = (timeUs - snap.lastUrgentUs) / 1_000_000;
-      html += `<div>last urgent: ${ago.toFixed(2)}s ago</div>`;
-    } else {
-      html += "<div>last urgent: --</div>";
-    }
+    const urgentStr = snap.online && snap.lastUrgentUs > 0
+      ? `${((timeUs - snap.lastUrgentUs) / 1_000_000).toFixed(2)}s ago` : "--";
+
+    const rxStr = snap.online && rxRate !== undefined ? `${rxRate.toFixed(1)} msg/s` : "--";
+
+    let html = '<div class="nb-status-grid">'
+      + `<span class="nb-sl">bcast in</span><span>${bcastStr}</span>`
+      + `<span class="nb-sl">next gossip</span><span>${nextTopicName}</span>`
+      + `<span class="nb-sl">last urgent</span><span>${urgentStr}</span>`
+      + `<span class="nb-sl">arrival avg</span><span>${rxStr}</span>`
+      + "</div>";
+
     if (html !== this.statusCacheKey) {
       this.statusCacheKey = html;
       this.statusSection.innerHTML = html;
