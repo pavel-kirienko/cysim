@@ -11,7 +11,7 @@ import { EventLog } from "./event-log.js";
 import { Timeline } from "./timeline.js";
 import { Viewport } from "./viewport.js";
 
-const INITIAL_NODES = 6;
+const INITIAL_NODES = 10;
 const STEP_US = 1_000; // 1ms sim time per step
 const MAX_BUDGET_US = 1_000_000; // cap budget to 1s sim time per frame
 
