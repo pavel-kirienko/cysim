@@ -33,6 +33,9 @@ let historyTimes: number[] = [];
 let eventLog: EventLog;
 let timeline: Timeline;
 
+const SNAPSHOT_INTERVAL_US = 10_000; // 10ms sim time between snapshots
+let lastSnapshotUs = 0;
+
 function sharedTopicName(index: number): string {
   const letter = String.fromCharCode(97 + (index % 26));
   return index < 26 ? "topic/" + letter : "topic/" + letter + Math.floor(index / 26);
@@ -156,22 +159,32 @@ function doStep(): boolean {
   }
   const newEvents = sim.stepUntil(sim.nowUs + STEP_US);
   if (newEvents.length > 0) {
-    saveSnapshot(newEvents);
-    renderCurrent(newEvents);
+    if (sim.nowUs - lastSnapshotUs >= SNAPSHOT_INTERVAL_US) {
+      saveSnapshot(newEvents);
+      lastSnapshotUs = sim.nowUs;
+    } else {
+      // Still ingest events into the log without a full snapshot
+      if (historyIndex >= 0) {
+        eventLog.ingest(newEvents, historyIndex);
+      }
+    }
+    renderCurrent(newEvents, true);
     return true;
   }
-  renderCurrent([]);
+  renderCurrent([], true);
   return false;
 }
 
-function renderCurrent(events: EventRecord[] = []): void {
+function renderCurrent(events: EventRecord[] = [], checkConvergence = false): void {
   const snaps = sim.snapshot();
   renderer.render(sim.nowUs, snaps, events);
   const maxTimeUs = historyTimes.length > 0 ? historyTimes[historyTimes.length - 1] : 0;
   const rewound = historyIndex >= 0 && historyIndex < history.length - 1;
   ui.updateFrame(sim.nowUs, snaps, history.length, maxTimeUs, rewound);
-  const conv = sim.checkConvergenceFromSnaps(snaps);
-  timeline.recordConvergence(sim.nowUs, conv);
+  if (checkConvergence) {
+    const conv = sim.checkConvergenceFromSnaps(snaps);
+    timeline.recordConvergence(sim.nowUs, conv);
+  }
   timeline.render(sim.nowUs);
 }
 
@@ -181,7 +194,7 @@ function navigateTo(index: number): void {
   historyIndex = index;
   timeline.setCurrentIndex(historyIndex);
   renderer.rebuildAnimationsFromLog(eventLog, sim.nowUs);
-  renderCurrent();
+  renderCurrent([], true);
 }
 
 function resetWithConfig(config: { seed: number; network?: { delay_us?: [number, number]; loss_probability?: number }; nodes: { topics?: { name: string; evictions?: number; lage?: number }[] }[] }): void {
@@ -206,6 +219,7 @@ function resetWithConfig(config: { seed: number; network?: { delay_us?: [number,
   historyIndex = -1;
   lastWallTime = null;
   simTimeBudget = 0;
+  lastSnapshotUs = 0;
   eventLog.clear();
   renderer.clearAnimations();
   timeline.resetNodeIds();

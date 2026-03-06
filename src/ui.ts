@@ -276,7 +276,7 @@ export class UI {
     this.speedLabel.style.minWidth = "60px";
     this.speedLabel.style.display = "inline-block";
 
-    this.addNodeBtn = this.btn("Add node", "+ node");
+    this.addNodeBtn = this.btn("Add node", "Add node");
     this.addNodeBtn.addEventListener("click", () => {
       this.sim.addNode();
       this.onRelayout?.();

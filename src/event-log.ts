@@ -30,6 +30,11 @@ export class EventLog {
   private nextId = 0;
   // Correlation: key -> send event ID
   private pendingSends = new Map<string, number>();
+  private byId = new Map<number, TimelineEvent>();
+
+  getById(id: number): TimelineEvent | undefined {
+    return this.byId.get(id);
+  }
 
   ingest(records: EventRecord[], historyIndex: number): void {
     for (const rec of records) {
@@ -54,6 +59,7 @@ export class EventLog {
       }
 
       this.events.push(te);
+      this.byId.set(te.id, te);
 
       // Correlation for send/receive
       if (code === "GB" || code === "GU" || code === "GF") {
@@ -67,7 +73,7 @@ export class EventLog {
           const sendId = this.pendingSends.get(key);
           if (sendId !== undefined) {
             te.sendId = sendId;
-            const sendEv = this.events.find(e => e.id === sendId);
+            const sendEv = this.byId.get(sendId);
             if (sendEv) sendEv.receiveIds.push(te.id);
           }
         }
@@ -81,6 +87,7 @@ export class EventLog {
     this.events = this.events.filter(e => {
       if (e.historyIndex > historyIndex) {
         removedIds.add(e.id);
+        this.byId.delete(e.id);
         return false;
       }
       return true;
@@ -108,5 +115,6 @@ export class EventLog {
     this.events = [];
     this.nextId = 0;
     this.pendingSends.clear();
+    this.byId.clear();
   }
 }

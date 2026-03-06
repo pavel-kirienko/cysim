@@ -56,6 +56,7 @@ export class Timeline {
   private viewStartUs = 0;
   private viewEndUs = 10_000_000; // 10s default
   private nodeIds: number[] = [];       // all ever seen, sorted
+  private nodeRowIndex = new Map<number, number>();
   private activeNodeIds = new Set<number>();
   private convergenceHistory: { timeUs: number; converged: boolean }[] = [];
 
@@ -100,12 +101,22 @@ export class Timeline {
         this.nodeIds.sort((a, b) => a - b);
       }
     }
+    this.rebuildNodeRowIndex();
   }
 
   resetNodeIds(): void {
     this.nodeIds = [];
+    this.nodeRowIndex.clear();
     this.activeNodeIds.clear();
     this.convergenceHistory = [];
+    this.colocatedCacheLen = -1;
+  }
+
+  private rebuildNodeRowIndex(): void {
+    this.nodeRowIndex.clear();
+    for (let i = 0; i < this.nodeIds.length; i++) {
+      this.nodeRowIndex.set(this.nodeIds[i], i);
+    }
   }
 
   recordConvergence(timeUs: number, converged: boolean): void {
@@ -276,7 +287,7 @@ export class Timeline {
     for (const ev of this.eventLog.events) {
       const x = this.eventX(ev);
       if (x < GUTTER_W - 10 || x > W + 10) continue;
-      const rowIdx = this.nodeIds.indexOf(ev.nodeId);
+      const rowIdx = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (rowIdx < 0) continue;
       const y = (rowIdx + 1) * ROW_H; // +1 for convergence row
       if (y > contentH) continue;
@@ -311,8 +322,11 @@ export class Timeline {
 
   // Cache of per-event x-offsets for co-located events (same nodeId + timeUs)
   private colocatedOffsets = new Map<number, number>(); // event.id → pixel offset
+  private colocatedCacheLen = -1;
 
   private buildColocatedOffsets(): void {
+    if (this.eventLog.events.length === this.colocatedCacheLen) return;
+    this.colocatedCacheLen = this.eventLog.events.length;
     this.colocatedOffsets.clear();
     // Group events by (nodeId, timeUs) preserving array order
     const groups = new Map<string, TimelineEvent[]>();
@@ -358,7 +372,7 @@ export class Timeline {
       if (ev.receiveIds.length === 0) continue;
       const sx = this.eventX(ev);
       if (sx > W + 50) continue;
-      const sRow = this.nodeIds.indexOf(ev.nodeId);
+      const sRow = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (sRow < 0) continue;
       const sy = (sRow + 1) * ROW_H + ROW_H / 2;
       if (sy > contentH) continue;
@@ -379,11 +393,11 @@ export class Timeline {
       ctx.lineWidth = 1;
 
       for (const rid of ev.receiveIds) {
-        const recv = this.eventLog.events.find(e => e.id === rid);
+        const recv = this.eventLog.getById(rid);
         if (!recv) continue;
         const rx = this.eventX(recv);
         if (rx < GUTTER_W - 50) continue;
-        const rRow = this.nodeIds.indexOf(recv.nodeId);
+        const rRow = this.nodeRowIndex.get(recv.nodeId) ?? -1;
         if (rRow < 0) continue;
         const ry = (rRow + 1) * ROW_H + ROW_H / 2;
         if (ry > contentH) continue;
@@ -849,7 +863,7 @@ export class Timeline {
 
     for (const ev of this.eventLog.events) {
       const ex = this.eventX(ev);
-      const rowIdx = this.nodeIds.indexOf(ev.nodeId);
+      const rowIdx = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (rowIdx < 0) continue;
       const ey = (rowIdx + 1) * ROW_H + ROW_H / 2;
       const dx = x - ex, dy = y - ey;
@@ -887,15 +901,15 @@ export class Timeline {
     for (const ev of this.eventLog.events) {
       if (ev.receiveIds.length === 0) continue;
       const sx = this.eventX(ev);
-      const sRow = this.nodeIds.indexOf(ev.nodeId);
+      const sRow = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (sRow < 0) continue;
       const sy = (sRow + 1) * ROW_H + ROW_H / 2;
 
       for (const rid of ev.receiveIds) {
-        const recv = this.eventLog.events.find(e => e.id === rid);
+        const recv = this.eventLog.getById(rid);
         if (!recv) continue;
         const rx = this.eventX(recv);
-        const rRow = this.nodeIds.indexOf(recv.nodeId);
+        const rRow = this.nodeRowIndex.get(recv.nodeId) ?? -1;
         if (rRow < 0) continue;
         const ry = (rRow + 1) * ROW_H + ROW_H / 2;
 

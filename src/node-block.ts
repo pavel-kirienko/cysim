@@ -32,6 +32,7 @@ export class NodeBlock {
   private peersBody: HTMLTableSectionElement;
   private topicsContainer: HTMLElement;
 
+  private statusCacheKey = "";
   private topicCacheKey = "";
   private peerCacheKey = "";
   private peerCells: [HTMLElement, HTMLElement][] = [];
@@ -149,7 +150,10 @@ export class NodeBlock {
     } else {
       html += "<div>last urgent: --</div>";
     }
-    this.statusSection.innerHTML = html;
+    if (html !== this.statusCacheKey) {
+      this.statusCacheKey = html;
+      this.statusSection.innerHTML = html;
+    }
 
     // Topics table
     const topicKey = snap.topics.map(t => `${t.hash.toString(36)}:${t.evictions}:${t.lage}:${t.subjectId}`).join(",");
