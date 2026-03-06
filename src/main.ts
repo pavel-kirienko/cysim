@@ -192,6 +192,7 @@ function resetWithSeed(seed: number): void {
   lastWallTime = null;
   simTimeBudget = 0;
   eventLog.clear();
+  renderer.clearAnimations();
   timeline.resetNodeIds();
   timeline.setHistoryTimes(historyTimes);
   timeline.setCurrentIndex(-1);
