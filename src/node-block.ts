@@ -5,7 +5,7 @@
 import { NodeSnapshot, TopicSnap, PeerSnap } from "./types.js";
 import { GOSSIP_PEER_ELIGIBLE } from "./constants.js";
 
-const BOX_WIDTH = 280;
+const BOX_WIDTH = 320;
 
 export interface NodeBlockCallbacks {
   onPartitionToggle(nid: number): void;

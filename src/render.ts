@@ -16,7 +16,7 @@ const C_BROADCAST   = "#f1c40f"; // yellow expanding circle
 const C_UNICAST     = "#e67e22";
 const C_FORWARD     = "#9b59b6";
 
-const BOX_WIDTH     = 280;
+const BOX_WIDTH     = 320;
 
 interface ActiveArrow {
   startUs: number;
