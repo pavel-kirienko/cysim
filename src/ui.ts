@@ -881,7 +881,7 @@ export class UI {
     title.style.cssText = "font:bold 13px 'Ubuntu Mono',monospace;color:#fff;margin-bottom:12px";
     box.appendChild(title);
 
-    const makeField = (label: string, def: number, _min: number): HTMLInputElement => {
+    const makeField = (label: string, def: string, numeric?: boolean): HTMLInputElement => {
       const row = document.createElement("div");
       row.style.cssText = "margin-bottom:8px;display:flex;align-items:center;justify-content:space-between";
       const lbl = document.createElement("label");
@@ -890,17 +890,25 @@ export class UI {
       const inp = document.createElement("input");
       inp.type = "text";
       inp.inputMode = "numeric";
-      inp.value = String(def);
-      inp.style.cssText = "width:60px;padding:2px 4px;font:11px 'Ubuntu Mono',monospace;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;text-align:right";
-      inp.addEventListener("input", () => { inp.value = inp.value.replace(/[^0-9]/g, ""); });
+      inp.value = def;
+      inp.style.cssText = "width:100px;padding:2px 4px;font:11px 'Ubuntu Mono',monospace;background:#1a1a1a;color:#fff;border:1px solid #555;border-radius:3px;text-align:right";
+      if (numeric) inp.addEventListener("input", () => { inp.value = inp.value.replace(/[^0-9]/g, ""); });
       row.append(lbl, inp);
       box.appendChild(row);
       return inp;
     };
 
-    const nodesInput = makeField("Nodes", 6, 1);
-    const topicsInput = makeField("Topics", 6, 0);
-    const collidingInput = makeField("Colliding topics", 2, 0);
+    const curSeed = this.sim.seed >>> 0;
+    const curDelay = this.sim.net.delayUs;
+    const curLoss = this.sim.net.lossProbability;
+    const curNodes = this.sim.nodes.size;
+
+    const seedInput = makeField("Seed", String(curSeed), true);
+    const nodesInput = makeField("Nodes", String(curNodes), true);
+    const topicsInput = makeField("Topics", "6", true);
+    const collidingInput = makeField("Colliding topics", "2", true);
+    const delayInput = makeField("Delay (µs)", `${curDelay[0]}, ${curDelay[1]}`);
+    const lossInput = makeField("Loss probability", String(curLoss));
 
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:8px;margin-top:12px";
@@ -912,8 +920,15 @@ export class UI {
       const nc = Math.max(1, parseInt(nodesInput.value) || 1);
       const tc = Math.max(0, parseInt(topicsInput.value) || 0);
       const cc = Math.max(0, parseInt(collidingInput.value) || 0);
+      const seed = (parseInt(seedInput.value) || curSeed) >>> 0;
+      const delayParts = delayInput.value.split(",").map(s => parseInt(s.trim()));
+      const delay: [number, number] = [
+        delayParts[0] > 0 ? delayParts[0] : curDelay[0],
+        (delayParts[1] ?? delayParts[0]) > 0 ? (delayParts[1] ?? delayParts[0]) : curDelay[1],
+      ];
+      const loss = Math.max(0, Math.min(1, parseFloat(lossInput.value) || curLoss));
       overlay.remove();
-      this.generateConfig(nc, tc, cc);
+      this.generateConfig(nc, tc, cc, seed, delay, loss);
     });
 
     const cancelBtn = document.createElement("button");
@@ -931,8 +946,10 @@ export class UI {
     document.body.appendChild(overlay);
   }
 
-  private generateConfig(nodeCount: number, topicCount: number, collidingCount: number): void {
-    const seed = Math.random() * 0xFFFFFFFF | 0;
+  private generateConfig(
+    nodeCount: number, topicCount: number, collidingCount: number,
+    seed: number, delay: [number, number], loss: number,
+  ): void {
 
     // Build per-node topic arrays
     const nodes: { topics: { name: string }[] }[] = [];
@@ -971,6 +988,10 @@ export class UI {
 
     const obj: any = {
       seed: seed >>> 0,
+      network: {
+        delay_us: [delay[0], delay[1]],
+        loss_probability: loss,
+      },
       nodes: nodes.map(n => n.topics.length > 0 ? { topics: n.topics } : {}),
     };
     this.configTextarea.value = compactJSON(obj);
