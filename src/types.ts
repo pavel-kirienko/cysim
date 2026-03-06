@@ -84,7 +84,7 @@ export interface NodeSnapshot {
 // Timeline types
 // ---------------------------------------------------------------------------
 
-export type TimelineCode = "GB"|"GU"|"GF"|"GR"|"TN"|"TC"|"TD"|"TX"|"NN"|"NX"|"CR";
+export type TimelineCode = "GB"|"GU"|"GF"|"GR"|"GX"|"TN"|"TC"|"TD"|"TX"|"NN"|"NX"|"CR";
 
 export interface TimelineEvent {
   id: number;

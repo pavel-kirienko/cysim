@@ -1231,6 +1231,7 @@ export class Simulation {
     const lage = payload["lage"] as number;
     const name = payload["name"] as string;
     const ttl = payload["ttl"] as number;
+    const msgType = payload["msg_type"] as string;
 
     if ((lage < LAGE_MIN) || (lage > LAGE_MAX)) return;
     if (isPinned(hash) && evictions !== 0) return;
@@ -1239,7 +1240,9 @@ export class Simulation {
 
     const dedupHash = gossipDedupHash(hash, evictions, lage);
     const dedup = this.dedupMatchOrLru(node, dedupHash);
-    const shouldForward = this.dedupIsFresh(dedup, dedupHash) && (ttl > 0);
+    const dedupFresh = this.dedupIsFresh(dedup, dedupHash);
+    const ttlPositive = ttl > 0;
+    const shouldForward = dedupFresh && ttlPositive;
     this.dedupUpdate(dedup, dedupHash);
 
     pushLog({
@@ -1252,9 +1255,32 @@ export class Simulation {
         originSrc: srcId,
         sendTimeUs: payload["send_time_us"],
         name,
-        msgType: payload["msg_type"],
+        msgType,
       },
     });
+
+    const maybeLogGossipXterminated = (localWon: boolean): void => {
+      const epidemicUnicast = msgType === "unicast" || msgType === "forward";
+      if (localWon || shouldForward || !epidemicUnicast) {
+        return;
+      }
+      const ttlDropped = !ttlPositive;
+      const dedupDropped = !dedupFresh;
+      const dropReason = ttlDropped && dedupDropped ? "ttl+dedup" : (ttlDropped ? "ttl" : "dedup");
+      pushLog({
+        timeUs: this.nowUs,
+        event: "gossip_xterminated",
+        src: node.nodeId,
+        dst: null,
+        topicHash: hash,
+        details: {
+          name,
+          msgType,
+          ttl,
+          drop_reason: dropReason,
+        },
+      });
+    };
 
     const mine = node.topics.get(hash);
     if (mine) {
@@ -1271,11 +1297,13 @@ export class Simulation {
           pushLog,
         );
       }
+      maybeLogGossipXterminated(localWon);
     } else {
       const localWon = this.onGossipUnknownTopic(node, hash, evictions, lage, pushLog);
       if (shouldForward && !localWon) {
         this.gossipEpidemicForward(node, srcId, ttl, hash, evictions, lage, name, pushLog);
       }
+      maybeLogGossipXterminated(localWon);
     }
   }
 

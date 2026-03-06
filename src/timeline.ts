@@ -10,6 +10,7 @@ const CODE_COLORS: Record<TimelineCode, string> = {
   GU: "#e67e22",
   GF: "#9b59b6",
   GR: "#3498db",
+  GX: "#8e44ad",
   TN: "#27ae60",
   TC: "#e74c3c",
   TD: "#e74c3c",
@@ -24,6 +25,7 @@ const CODE_NAMES: Record<TimelineCode, string> = {
   GU: "Gossip Unicast",
   GF: "Gossip Forward",
   GR: "Gossip Received",
+  GX: "Gossip eXterminated",
   TN: "Topic New",
   TC: "Topic Collision",
   TD: "Topic Divergence",
@@ -816,6 +818,9 @@ export class Timeline {
     if (d.evictions !== undefined) text += `  Evictions: ${d.evictions}`;
     if (d.lage !== undefined) text += `  Lage: ${d.lage}`;
     if (d.dst !== null && d.dst !== undefined) text += `  Dst: Node${d.dst}`;
+    if (d.drop_reason === "ttl") text += "  Dropped: TTL=0";
+    else if (d.drop_reason === "dedup") text += "  Dropped: recent dedup";
+    else if (d.drop_reason === "ttl+dedup") text += "  Dropped: TTL=0 + recent dedup";
     if (d.type) text += `  Type: ${d.type}`;
     if (d.local_won !== undefined) text += `  Local won: ${d.local_won}`;
     return text;

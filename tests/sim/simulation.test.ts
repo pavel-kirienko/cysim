@@ -1,12 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { Simulation } from "../../src/sim.js";
-import type { NetworkConfig } from "../../src/types.js";
+import type { EventRecord, NetworkConfig } from "../../src/types.js";
 import { GOSSIP_PERIOD } from "../../src/constants.js";
 
 const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0 };
 
 function makeSim(seed = 42): Simulation {
   return new Simulation(NET, seed);
+}
+
+function invokeMsgArrive(sim: Simulation, payload: Record<string, unknown>): EventRecord[] {
+  const out: EventRecord[] = [];
+  (sim as any).handleMsgArrive(payload, (r: EventRecord) => out.push(r));
+  return out;
 }
 
 describe("Simulation", () => {
@@ -139,6 +145,71 @@ describe("Simulation", () => {
       const sim = makeSim();
       sim.stepUntil(5_000_000);
       expect(sim.nowUs).toBe(5_000_000);
+    });
+  });
+
+  describe("gossip_xterminated", () => {
+    it("logs GX for epidemic unicast dropped due to TTL=0", () => {
+      const sim = makeSim();
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+      const events = invokeMsgArrive(sim, {
+        src: 1,
+        dst: 0,
+        topic_hash: 0x1ab2cd3ef45n,
+        evictions: 0,
+        lage: 0,
+        name: "topic/x",
+        ttl: 0,
+        msg_type: "unicast",
+        send_time_us: sim.nowUs,
+      });
+      const gx = events.find(e => e.event === "gossip_xterminated");
+      expect(gx).toBeDefined();
+      expect(gx!.details["drop_reason"]).toBe("ttl");
+    });
+
+    it("logs GX for epidemic unicast dropped due to dedup", () => {
+      const sim = makeSim();
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+      const payload = {
+        src: 1,
+        dst: 0,
+        topic_hash: 0x0fedcba98765n,
+        evictions: 0,
+        lage: 0,
+        name: "topic/y",
+        ttl: 3,
+        msg_type: "forward",
+        send_time_us: sim.nowUs,
+      };
+      invokeMsgArrive(sim, payload);
+      const events = invokeMsgArrive(sim, payload);
+      const gx = events.find(e => e.event === "gossip_xterminated");
+      expect(gx).toBeDefined();
+      expect(gx!.details["drop_reason"]).toBe("dedup");
+    });
+
+    it("does not log GX for broadcast gossip", () => {
+      const sim = makeSim();
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+      const events = invokeMsgArrive(sim, {
+        src: 1,
+        dst: 0,
+        topic_hash: 0x123456789abcn,
+        evictions: 0,
+        lage: 0,
+        name: "topic/z",
+        ttl: 0,
+        msg_type: "broadcast",
+        send_time_us: sim.nowUs,
+      });
+      expect(events.some(e => e.event === "gossip_xterminated")).toBe(false);
     });
   });
 

@@ -10,6 +10,7 @@ export function mapCode(rec: EventRecord): TimelineCode {
     case "unicast":   return "GU";
     case "forward":   return "GF";
     case "received":  return "GR";
+    case "gossip_xterminated": return "GX";
     case "join":      return "NN";
     case "topic_new": return "TN";
     case "topic_expunged": return "TX";

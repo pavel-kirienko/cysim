@@ -12,6 +12,7 @@ describe("mapCode", () => {
     expect(mapCode(rec("unicast"))).toBe("GU");
     expect(mapCode(rec("forward"))).toBe("GF");
     expect(mapCode(rec("received"))).toBe("GR");
+    expect(mapCode(rec("gossip_xterminated"))).toBe("GX");
     expect(mapCode(rec("join"))).toBe("NN");
     expect(mapCode(rec("topic_new"))).toBe("TN");
     expect(mapCode(rec("topic_expunged"))).toBe("TX");
