@@ -12,7 +12,7 @@ import {
   GOSSIP_PEER_STALE, GOSSIP_PEER_ELIGIBLE,
   GOSSIP_PEER_REPLACEMENT_PROBABILITY_RECIPROCAL,
   SUBJECT_ID_PINNED_MAX, SUBJECT_ID_MODULUS, LAGE_MIN, LAGE_MAX,
-  PROPAGATION_SPEED, SPIN_BLOCK_MAX,
+  PROPAGATION_SPEED,
 } from "./constants.js";
 
 const U64_MASK = 0xFFFF_FFFF_FFFF_FFFFn;
@@ -845,7 +845,8 @@ export class Simulation {
       return this.nowUs;
     }
     if (this.listTail(node.gossipUrgent) !== null && node.gossipNextUs > this.nowUs) {
-      return this.nowUs + SPIN_BLOCK_MAX;
+      // Allow urgent repair gossips to go out immediately, even before the first broadcast slot.
+      return this.nowUs;
     }
     if (node.gossipNextUs < HEAT_DEATH) {
       return node.gossipNextUs;

@@ -49,6 +49,72 @@ describe("simulation integration", () => {
     expect(sim.checkConvergence()).toBe(true);
   });
 
+  it("local-win divergence emits urgent unicast gossip", () => {
+    const sim = makeSim(1);
+    sim.addNode(0);
+    sim.addNode(1);
+    sim.stepUntil(1);
+
+    sim.addTopicToNode(0, "topic/divergence", undefined, 3, 6);
+    const localFirstBroadcastUs = sim.nodes.get(0)!.gossipNextUs;
+    sim.addTopicToNode(1, "topic/divergence", undefined, 0, 0);
+
+    // Verify urgent repair happens before the local node's first scheduled broadcast slot.
+    const events = sim.stepUntil(localFirstBroadcastUs - 1);
+    const conflict = events.find(
+      e =>
+        e.event === "conflict" &&
+        e.src === 0 &&
+        (e.details as Record<string, unknown>)["type"] === "divergence" &&
+        (e.details as Record<string, unknown>)["local_won"] === true,
+    );
+    expect(conflict).toBeDefined();
+
+    const unicast = events.find(
+      e =>
+        e.event === "unicast" &&
+        e.src === 0 &&
+        e.topicHash === conflict!.topicHash &&
+        e.timeUs >= conflict!.timeUs,
+    );
+    expect(unicast).toBeDefined();
+    expect(unicast!.timeUs).toBeLessThan(localFirstBroadcastUs);
+  });
+
+  it("local-win collision emits urgent unicast gossip", () => {
+    const sim = makeSim(1);
+    sim.addNode(0);
+    sim.addNode(1);
+    sim.stepUntil(1);
+
+    const sid = 9000;
+    const local = sim.addTopicToNode(0, undefined, sid, 0, 6)!;
+    const localFirstBroadcastUs = sim.nodes.get(0)!.gossipNextUs;
+    const remote = sim.addTopicToNode(1, undefined, sid, 0, 0)!;
+    expect(local.hash).not.toBe(remote.hash);
+
+    // Verify urgent repair happens before the local node's first scheduled broadcast slot.
+    const events = sim.stepUntil(localFirstBroadcastUs - 1);
+    const conflict = events.find(
+      e =>
+        e.event === "conflict" &&
+        e.src === 0 &&
+        (e.details as Record<string, unknown>)["type"] === "collision" &&
+        (e.details as Record<string, unknown>)["local_won"] === true,
+    );
+    expect(conflict).toBeDefined();
+
+    const unicast = events.find(
+      e =>
+        e.event === "unicast" &&
+        e.src === 0 &&
+        e.topicHash === conflict!.topicHash &&
+        e.timeUs >= conflict!.timeUs,
+    );
+    expect(unicast).toBeDefined();
+    expect(unicast!.timeUs).toBeLessThan(localFirstBroadcastUs);
+  });
+
   it("network partition: node in B doesn't affect partition A convergence", () => {
     const sim = makeSim();
     sim.addNode(); // 0
