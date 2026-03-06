@@ -41,7 +41,8 @@ export class Renderer {
   private externalBoxSizes: Map<number, { w: number; h: number }> = new Map();
   private lastSnaps: Map<number, NodeSnapshot> = new Map();
   private lastTimeUs = 0;
-  focusedTopicHash: bigint | null = null;
+  stickyTopicHash: bigint | null = null;
+  hoverTopicHash: bigint | null = null;
 
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
@@ -245,11 +246,15 @@ export class Renderer {
       const lw = 3.0 - frac * 2.0;
 
       // Dim if a topic is focused and this broadcast doesn't match
-      const focused = this.focusedTopicHash;
-      if (focused !== null) {
-        if (bc.event.topicHash === focused) { /* full alpha */ }
-        else if (bc.event.topicHash === 0n) alpha *= 0.3;
-        else alpha *= 0.3;
+      const sticky = this.stickyTopicHash;
+      const hover = this.hoverTopicHash;
+      const hasFocus = sticky !== null || hover !== null;
+      const matchesHover = hover !== null && bc.event.topicHash === hover;
+      const matchesSticky = sticky !== null && bc.event.topicHash === sticky;
+      if (hasFocus) {
+        if (matchesHover) { /* full */ }
+        else if (matchesSticky) { alpha *= (hover !== null ? 0.6 : 1.0); }
+        else { alpha *= (hover !== null ? 0.15 : 0.3); }
       }
 
       ctx.save();
@@ -262,7 +267,7 @@ export class Renderer {
       ctx.restore();
 
       // Info box near source node — skip if dimmed
-      if (focused !== null && bc.event.topicHash !== focused) continue;
+      if (hasFocus && !matchesHover && !matchesSticky) continue;
       const d = bc.event.details || {};
       const bName = (d.name as string) || "?";
       const bSid = d.subjectId as number ?? "?";
@@ -327,11 +332,15 @@ export class Renderer {
       }
 
       // Dim if a topic is focused and this arrow doesn't match
-      const focused = this.focusedTopicHash;
-      if (focused !== null) {
-        if (ev.topicHash === focused) { /* full alpha */ }
-        else if (ev.topicHash === 0n) alpha *= 0.3;
-        else alpha *= 0.3;
+      const sticky = this.stickyTopicHash;
+      const hover = this.hoverTopicHash;
+      const hasFocus = sticky !== null || hover !== null;
+      const matchesHover = hover !== null && ev.topicHash === hover;
+      const matchesSticky = sticky !== null && ev.topicHash === sticky;
+      if (hasFocus) {
+        if (matchesHover) { /* full */ }
+        else if (matchesSticky) { alpha *= (hover !== null ? 0.6 : 1.0); }
+        else { alpha *= (hover !== null ? 0.15 : 0.3); }
       }
 
       if (timeUs < msg.arriveUs) {
@@ -348,7 +357,7 @@ export class Renderer {
       }
 
       // Info box near arrowhead — skip if dimmed
-      if (focused !== null && ev.topicHash !== focused) continue;
+      if (hasFocus && !matchesHover && !matchesSticky) continue;
       const ldx = headX - x0, ldy = headY - y0;
       const llen = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
       const lnx = -ldy / llen, lny = ldx / llen;

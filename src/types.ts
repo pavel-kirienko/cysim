@@ -93,6 +93,7 @@ export interface TimelineEvent {
   nodeId: number;
   topicHash: bigint;
   details: Record<string, unknown>;
+  secondaryTopicHash: bigint | null; // for TC events: the remote topic hash
   receiveIds: number[];      // for send events: linked receive event IDs
   sendId: number | null;     // for GR events: the originating send event ID
   historyIndex: number;

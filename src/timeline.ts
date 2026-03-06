@@ -48,7 +48,8 @@ export class Timeline {
   private ctx: CanvasRenderingContext2D;
   private tooltip: HTMLElement;
   private eventLog: EventLog;
-  focusedTopicHash: bigint | null = null;
+  stickyTopicHash: bigint | null = null;
+  hoverTopicHash: bigint | null = null;
 
   private viewStartUs = 0;
   private viewEndUs = 10_000_000; // 10s default
@@ -61,6 +62,7 @@ export class Timeline {
   isPlaying: (() => boolean) | null = null;
   private historyTimes: number[] = [];
   private currentHistoryIndex = 0;
+  private lastCurrentTimeUs = 0;
 
   // Interaction state
   private get logicalW(): number { return this.canvas.width / (window.devicePixelRatio || 1); }
@@ -126,6 +128,42 @@ export class Timeline {
     this.currentHistoryIndex = index;
   }
 
+  /** Navigate to the history index of the next (dir=1) or previous (dir=-1) event. */
+  stepToEvent(dir: 1 | -1): void {
+    const events = this.eventLog.events;
+    if (events.length === 0) return;
+    const cur = this.currentHistoryIndex;
+    let best: number | null = null;
+    for (const ev of events) {
+      const hi = ev.historyIndex;
+      if (dir === 1 && hi > cur) { best = hi; break; }
+      if (dir === -1 && hi < cur) best = hi;
+    }
+    if (best !== null && best !== cur) {
+      this.onNavigate?.(best);
+    }
+  }
+
+  /** Pan the timeline view. dir=1 pans right, dir=-1 pans left. */
+  pan(dir: 1 | -1): void {
+    this.userHasManuallyScrolled = true;
+    const shift = (this.viewEndUs - this.viewStartUs) * 0.2 * dir;
+    this.viewStartUs += shift;
+    this.viewEndUs += shift;
+  }
+
+  /** Zoom the timeline view. dir=1 zooms in, dir=-1 zooms out. Centers on cursor. */
+  zoom(dir: 1 | -1): void {
+    this.userHasManuallyScrolled = true;
+    const range = this.viewEndUs - this.viewStartUs;
+    const factor = dir === 1 ? 1 / 1.3 : 1.3;
+    const newRange = Math.max(1_000, Math.min(range * factor, 600_000_000));
+    const center = this.lastCurrentTimeUs;
+    const centerFrac = (center - this.viewStartUs) / range;
+    this.viewStartUs = center - centerFrac * newRange;
+    this.viewEndUs = this.viewStartUs + newRange;
+  }
+
   resize(): void {
     const container = this.canvas.parentElement!;
     const dpr = window.devicePixelRatio || 1;
@@ -139,6 +177,7 @@ export class Timeline {
   }
 
   render(currentTimeUs: number): void {
+    this.lastCurrentTimeUs = currentTimeUs;
     const ctx = this.ctx;
     const W = this.logicalW;
     const H = this.logicalH;
@@ -162,6 +201,17 @@ export class Timeline {
     if (!this.userHasManuallyScrolled && playing && currentTimeUs > this.viewStartUs + range * 0.9) {
       this.viewStartUs = currentTimeUs - range * 0.5;
       this.viewEndUs = this.viewStartUs + range;
+    }
+
+    // When paused, keep cursor visible by panning
+    if (!playing) {
+      if (currentTimeUs > this.viewEndUs) {
+        this.viewStartUs = currentTimeUs - range * 0.8;
+        this.viewEndUs = this.viewStartUs + range;
+      } else if (currentTimeUs < this.viewStartUs) {
+        this.viewStartUs = currentTimeUs - range * 0.2;
+        this.viewEndUs = this.viewStartUs + range;
+      }
     }
 
     // Ensure viewStart doesn't go negative
@@ -218,7 +268,9 @@ export class Timeline {
     ctx.font = MARKER_FONT;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    const ftHash = this.focusedTopicHash;
+    const sticky = this.stickyTopicHash;
+    const hover = this.hoverTopicHash;
+    const hasFocus = sticky !== null || hover !== null;
     for (const ev of this.eventLog.events) {
       const x = this.eventX(ev);
       if (x < GUTTER_W - 10 || x > W + 10) continue;
@@ -229,10 +281,12 @@ export class Timeline {
 
       const active = this.activeNodeIds.has(ev.nodeId);
       let baseAlpha = active ? 1.0 : 0.35;
-      if (ftHash !== null) {
-        if (ev.topicHash === ftHash) { /* full */ }
-        else if (ev.topicHash === 0n) baseAlpha *= 0.3;
-        else baseAlpha *= 0.3;
+      if (hasFocus) {
+        const matchesHover = hover !== null && (ev.topicHash === hover || ev.secondaryTopicHash === hover);
+        const matchesSticky = sticky !== null && (ev.topicHash === sticky || ev.secondaryTopicHash === sticky);
+        if (matchesHover) { /* full */ }
+        else if (matchesSticky) { baseAlpha *= (hover !== null ? 0.6 : 1.0); }
+        else { baseAlpha *= (hover !== null ? 0.15 : 0.3); }
       }
       const color = CODE_COLORS[ev.code];
       ctx.globalAlpha = baseAlpha;
@@ -295,7 +349,9 @@ export class Timeline {
 
   private drawCausalArrows(ctx: CanvasRenderingContext2D, contentH: number): void {
     const W = this.logicalW;
-    const ftHash = this.focusedTopicHash;
+    const stickyA = this.stickyTopicHash;
+    const hoverA = this.hoverTopicHash;
+    const hasFocusA = stickyA !== null || hoverA !== null;
     for (const ev of this.eventLog.events) {
       if (ev.receiveIds.length === 0) continue;
       const sx = this.eventX(ev);
@@ -306,10 +362,12 @@ export class Timeline {
       if (sy > contentH) continue;
 
       let arrowAlpha = 0.5;
-      if (ftHash !== null) {
-        if (ev.topicHash === ftHash) { /* full */ }
-        else if (ev.topicHash === 0n) arrowAlpha *= 0.2;
-        else arrowAlpha *= 0.2;
+      if (hasFocusA) {
+        const matchesHover = hoverA !== null && (ev.topicHash === hoverA || ev.secondaryTopicHash === hoverA);
+        const matchesSticky = stickyA !== null && (ev.topicHash === stickyA || ev.secondaryTopicHash === stickyA);
+        if (matchesHover) { /* full */ }
+        else if (matchesSticky) { arrowAlpha *= (hoverA !== null ? 0.6 : 1.0); }
+        else { arrowAlpha *= (hoverA !== null ? 0.15 : 0.2); }
       }
 
       const color = CODE_COLORS[ev.code];
@@ -863,9 +921,13 @@ export class Timeline {
     const d = ev.details;
     let text = `${ev.code} - ${name}  Node${ev.nodeId}  ${(ev.timeUs / 1_000_000).toFixed(3)}s`;
     if (d.name) text += `  Topic: ${d.name}`;
+    if (d.remote_name) text += `  Remote topic: ${d.remote_name}`;
     if (d.evictions !== undefined) text += `  Evictions: ${d.evictions}`;
     if (d.lage !== undefined) text += `  Lage: ${d.lage}`;
-    if (d.dst !== null && d.dst !== undefined) text += `  Dst: Node${d.dst}`;
+    if (d.dst !== null && d.dst !== undefined) {
+      if (ev.code === "GR") text += `  Src: Node${d.dst}`;
+      else text += `  Dst: Node${d.dst}`;
+    }
     if (d.drop_reason === "ttl") text += "  Dropped: TTL=0";
     else if (d.drop_reason === "dedup") text += "  Dropped: recent dedup";
     else if (d.drop_reason === "ttl+dedup") text += "  Dropped: TTL=0 + recent dedup";

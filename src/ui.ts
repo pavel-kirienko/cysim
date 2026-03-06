@@ -33,7 +33,8 @@ export class UI {
   private timeline: Timeline | null = null;
 
   // Focus state
-  private focusedTopicHash: bigint | null = null;
+  private stickyTopicHash: bigint | null = null;
+  private hoverTopicHash: bigint | null = null;
   private focusedTopicName: string | null = null;
   private statusBar: HTMLElement;
 
@@ -116,7 +117,7 @@ export class UI {
   }
 
   get focusedTopic(): bigint | null {
-    return this.focusedTopicHash;
+    return this.hoverTopicHash ?? this.stickyTopicHash;
   }
 
   private updatePlayBtn(): void {
@@ -137,9 +138,20 @@ export class UI {
     this.playBtn.addEventListener("click", togglePlay);
 
     document.addEventListener("keydown", (e) => {
-      if (e.code === "Space" && !(e.target instanceof HTMLInputElement)) {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
+      } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+        e.preventDefault();
+        if (this.playing) {
+          this.timeline?.pan(e.code === "ArrowRight" ? 1 : -1);
+        } else {
+          this.timeline?.stepToEvent(e.code === "ArrowRight" ? 1 : -1);
+        }
+      } else if (e.key === "+" || e.key === "=" || e.key === "-") {
+        e.preventDefault();
+        this.timeline?.zoom(e.key === "-" ? -1 : 1);
       }
     });
 
@@ -344,8 +356,12 @@ export class UI {
 
   updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number, rewound = false): void {
     // Propagate focus state
-    this.renderer.focusedTopicHash = this.focusedTopicHash;
-    if (this.timeline) this.timeline.focusedTopicHash = this.focusedTopicHash;
+    this.renderer.stickyTopicHash = this.stickyTopicHash;
+    this.renderer.hoverTopicHash = this.hoverTopicHash;
+    if (this.timeline) {
+      this.timeline.stickyTopicHash = this.stickyTopicHash;
+      this.timeline.hoverTopicHash = this.hoverTopicHash;
+    }
 
     // Time display
     this.timeDisplay.textContent = `t = ${(timeUs / 1_000_000).toFixed(3)}s`;
@@ -365,9 +381,10 @@ export class UI {
     this.updateTopicView(snaps);
 
     // Status bar: show rewind warning when paused at a rewound position with no other message
-    if (rewound && !this.playing && !this.focusedTopicHash) {
+    const anyFocused = this.stickyTopicHash !== null || this.hoverTopicHash !== null;
+    if (rewound && !this.playing && !anyFocused) {
       this.statusBar.textContent = "Rewound — resuming playback will erase history after this point";
-    } else if (!this.focusedTopicHash) {
+    } else if (!anyFocused) {
       this.statusBar.textContent = "";
     }
 
@@ -675,10 +692,12 @@ export class UI {
       block.setHighlighted(false);
       block.highlightTopic(null);
     }
-    this.focusedTopicHash = hash;
+    this.hoverTopicHash = hash;
     if (hash === null) {
-      this.focusedTopicName = null;
-      this.statusBar.textContent = "";
+      if (!this.stickyTopicHash) {
+        this.focusedTopicName = null;
+        this.statusBar.textContent = "";
+      }
       return;
     }
     this.focusedTopicName = name;
@@ -825,21 +844,40 @@ export class UI {
 
     // 5. Build DOM
     this.topicTableCells.clear();
-    const highlightedColCells: HTMLElement[] = [];
-    const highlightedRows: HTMLTableRowElement[] = [];
+    const hoverHighlightedCells: HTMLElement[] = [];
+    const hoverHighlightedRows: HTMLTableRowElement[] = [];
+    const hoverHighlightedColCells: HTMLElement[] = [];
+    const stickyHighlightedCells: HTMLElement[] = [];
+    const stickyHighlightedRows: HTMLTableRowElement[] = [];
+    const stickyHighlightedColCells: HTMLElement[] = [];
+
+    const clearHoverHighlight = () => {
+      for (const cell of hoverHighlightedCells) cell.classList.remove("cell-highlighted");
+      hoverHighlightedCells.length = 0;
+      for (const r of hoverHighlightedRows) r.classList.remove("row-highlight");
+      hoverHighlightedRows.length = 0;
+      for (const c of hoverHighlightedColCells) c.classList.remove("col-highlight");
+      hoverHighlightedColCells.length = 0;
+      this.hoverTopicHash = null;
+    };
+
+    const clearStickyHighlight = () => {
+      for (const cell of stickyHighlightedCells) cell.classList.remove("cell-sticky");
+      stickyHighlightedCells.length = 0;
+      for (const r of stickyHighlightedRows) r.classList.remove("row-highlight");
+      stickyHighlightedRows.length = 0;
+      for (const c of stickyHighlightedColCells) c.classList.remove("col-highlight");
+      stickyHighlightedColCells.length = 0;
+      this.stickyTopicHash = null;
+    };
+
     const clearAllHighlights = () => {
       for (const block of this.nodeBlocks.values()) {
         block.setHighlighted(false);
         block.highlightTopic(null);
       }
-      for (const cell of this.topicTableCells.values()) {
-        cell.classList.remove("cell-highlighted");
-      }
-      for (const c of highlightedColCells) c.classList.remove("col-highlight");
-      highlightedColCells.length = 0;
-      for (const r of highlightedRows) r.classList.remove("row-highlight");
-      highlightedRows.length = 0;
-      this.focusedTopicHash = null;
+      clearHoverHighlight();
+      clearStickyHighlight();
       this.focusedTopicName = null;
       this.statusBar.textContent = "";
     };
@@ -850,15 +888,46 @@ export class UI {
         block.setHighlighted(true);
         if (hash !== null) block.highlightTopic(hash);
       }
-      if (hash !== null) this.focusedTopicHash = hash;
     };
 
-    const highlightAllForTopic = (hash: bigint, topicRow: TopicRow) => {
-      this.focusedTopicHash = hash;
+    // Lookup helper: find topic row data by hash from sortedTopics (built below)
+    const topicRowByHash = matrix;
+
+    const applyStickyForTopic = (hash: bigint) => {
+      const topicRow = topicRowByHash.get(hash);
+      if (!topicRow) return;
       for (const [nid] of topicRow.cells) {
         highlightNodeAndTopic(nid, hash);
       }
+      // Mark cells with sticky class
+      for (const [nid] of topicRow.cells) {
+        const key = `${hash.toString(36)}:${nid}`;
+        const cell = this.topicTableCells.get(key);
+        if (cell) {
+          cell.classList.add("cell-sticky");
+          stickyHighlightedCells.push(cell);
+        }
+      }
     };
+
+    const applyHoverForTopic = (hash: bigint) => {
+      const topicRow = topicRowByHash.get(hash);
+      if (!topicRow) return;
+      for (const [nid] of topicRow.cells) {
+        highlightNodeAndTopic(nid, hash);
+      }
+      // Mark cells with highlighted class
+      for (const [nid] of topicRow.cells) {
+        const key = `${hash.toString(36)}:${nid}`;
+        const cell = this.topicTableCells.get(key);
+        if (cell) {
+          cell.classList.add("cell-highlighted");
+          hoverHighlightedCells.push(cell);
+        }
+      }
+    };
+
+    let stickyActive = false;
 
     const table = document.createElement("table");
     const caption = document.createElement("caption");
@@ -877,9 +946,20 @@ export class UI {
       const th = document.createElement("th");
       th.textContent = `Node${nid}`;
       th.addEventListener("mouseenter", () => {
+        if (stickyActive) return;
         clearAllHighlights();
         const block = this.nodeBlocks.get(nid);
         if (block) block.setHighlighted(true);
+      });
+      th.addEventListener("click", () => {
+        if (stickyActive) {
+          stickyActive = false;
+          clearAllHighlights();
+          const block = this.nodeBlocks.get(nid);
+          if (block) block.setHighlighted(true);
+        } else {
+          stickyActive = true;
+        }
       });
       headerRow.appendChild(th);
       columnCells.set(colIdx, [th]);
@@ -900,13 +980,85 @@ export class UI {
       for (const t of b[1].cells.values()) if (t.sortOrder < minB) minB = t.sortOrder;
       return minA - minB;
     });
-    const applyRowColHighlight = (tr: HTMLTableRowElement, colIdx: number) => {
+    const applyRowColHighlight = (tr: HTMLTableRowElement, colIdx: number, isSticky: boolean) => {
+      const rows = isSticky ? stickyHighlightedRows : hoverHighlightedRows;
+      const cols = isSticky ? stickyHighlightedColCells : hoverHighlightedColCells;
       tr.classList.add("row-highlight");
-      highlightedRows.push(tr);
+      rows.push(tr);
       const col = columnCells.get(colIdx);
       if (col) for (const c of col) {
         c.classList.add("col-highlight");
-        highlightedColCells.push(c);
+        cols.push(c);
+      }
+    };
+
+    const applyTopicHover = (hash: bigint, row: TopicRow, tr: HTMLTableRowElement, colIdx: number) => {
+      clearHoverHighlight();
+      this.hoverTopicHash = hash;
+      applyHoverForTopic(hash);
+      applyRowColHighlight(tr, colIdx, false);
+      this.focusedTopicName = row.name;
+      this.statusBar.textContent = `Highlighting events related to topic "${row.name}"`;
+    };
+
+    const handleTopicMouseenter = (hash: bigint, row: TopicRow, tr: HTMLTableRowElement, colIdx: number) => {
+      if (stickyActive) {
+        applyTopicHover(hash, row, tr, colIdx);
+        return;
+      }
+      clearAllHighlights();
+      this.hoverTopicHash = hash;
+      applyHoverForTopic(hash);
+      applyRowColHighlight(tr, colIdx, false);
+      this.focusedTopicName = row.name;
+      this.statusBar.textContent = `Highlighting events related to topic "${row.name}"`;
+    };
+
+    const handleTopicClick = (hash: bigint, row: TopicRow, tr: HTMLTableRowElement, colIdx: number) => {
+      if (stickyActive) {
+        if (this.stickyTopicHash === hash) {
+          // Clicking same topic: unstick, keep as hover
+          stickyActive = false;
+          clearStickyHighlight();
+          // Re-apply as hover-only
+          clearHoverHighlight();
+          for (const block of this.nodeBlocks.values()) {
+            block.setHighlighted(false);
+            block.highlightTopic(null);
+          }
+          this.hoverTopicHash = hash;
+          applyHoverForTopic(hash);
+          applyRowColHighlight(tr, colIdx, false);
+          this.focusedTopicName = row.name;
+          this.statusBar.textContent = `Highlighting events related to topic "${row.name}"`;
+        } else {
+          // Clicking different topic: move sticky to new topic
+          clearStickyHighlight();
+          clearHoverHighlight();
+          for (const block of this.nodeBlocks.values()) {
+            block.setHighlighted(false);
+            block.highlightTopic(null);
+          }
+          this.stickyTopicHash = hash;
+          applyStickyForTopic(hash);
+          applyRowColHighlight(tr, colIdx, true);
+          this.focusedTopicName = row.name;
+          this.statusBar.textContent = `Sticky highlight: topic "${row.name}"`;
+        }
+      } else {
+        // Activate sticky
+        stickyActive = true;
+        this.stickyTopicHash = hash;
+        // Convert current hover highlight to sticky
+        clearHoverHighlight();
+        for (const block of this.nodeBlocks.values()) {
+          block.setHighlighted(false);
+          block.highlightTopic(null);
+        }
+        applyStickyForTopic(hash);
+        applyRowColHighlight(tr, colIdx, true);
+        this.focusedTopicName = row.name;
+        this.statusBar.textContent = `Sticky highlight: topic "${row.name}"`;
       }
     };
 
@@ -917,13 +1069,8 @@ export class UI {
       const tdName = document.createElement("td");
       tdName.textContent = row.name.length > 18 ? row.name.slice(0, 18) : row.name;
       tdName.title = row.name;
-      tdName.addEventListener("mouseenter", () => {
-        clearAllHighlights();
-        highlightAllForTopic(hash, row);
-        applyRowColHighlight(tr, 0);
-        this.focusedTopicName = row.name;
-        this.statusBar.textContent = `Highlighting events related to topic "${row.name}"`;
-      });
+      tdName.addEventListener("mouseenter", () => handleTopicMouseenter(hash, row, tr, 0));
+      tdName.addEventListener("click", () => handleTopicClick(hash, row, tr, 0));
       tr.appendChild(tdName);
       columnCells.get(0)!.push(tdName);
 
@@ -933,14 +1080,8 @@ export class UI {
         const td = document.createElement("td");
         const t = row.cells.get(nid);
         const capturedHash = hash;
-        td.addEventListener("mouseenter", () => {
-          clearAllHighlights();
-          highlightNodeAndTopic(nid, capturedHash);
-          highlightAllForTopic(capturedHash, row);
-          applyRowColHighlight(tr, colIdx);
-          this.focusedTopicName = row.name;
-          this.statusBar.textContent = `Highlighting events related to topic "${row.name}"`;
-        });
+        td.addEventListener("mouseenter", () => handleTopicMouseenter(capturedHash, row, tr, colIdx));
+        td.addEventListener("click", () => handleTopicClick(capturedHash, row, tr, colIdx));
         if (t) {
           const line1 = document.createElement("div");
           line1.className = "cell-line1";
@@ -987,20 +1128,21 @@ export class UI {
         line2.textContent = `${winner.subjectId}`;
         tdCons.append(line1, line2);
       }
-      tdCons.addEventListener("mouseenter", () => {
-        clearAllHighlights();
-        highlightAllForTopic(hash, row);
-        applyRowColHighlight(tr, consColIdx);
-        this.focusedTopicName = row.name;
-        this.statusBar.textContent = `Highlighting events related to topic "${row.name}"`;
-      });
+      tdCons.addEventListener("mouseenter", () => handleTopicMouseenter(hash, row, tr, consColIdx));
+      tdCons.addEventListener("click", () => handleTopicClick(hash, row, tr, consColIdx));
       tr.appendChild(tdCons);
       columnCells.get(consColIdx)!.push(tdCons);
 
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
-    table.addEventListener("mouseleave", () => { clearAllHighlights(); });
+    table.addEventListener("mouseleave", () => {
+      if (stickyActive) {
+        clearHoverHighlight();
+      } else {
+        clearAllHighlights();
+      }
+    });
 
     // 6. Replace previous table
     const old = this.topicPanel.querySelector("table");

@@ -1149,6 +1149,7 @@ export class Simulation {
         topicHash: mine.hash,
         details: {
           type: "divergence",
+          name: mine.name,
           local_won: won,
           local_evictions: mine.evictions,
           remote_evictions: remoteEvictions,
@@ -1170,7 +1171,7 @@ export class Simulation {
           src: node.nodeId,
           dst: null,
           topicHash: mine.hash,
-          details: { accepted_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
+          details: { name: mine.name, accepted_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
         });
         out = CrdtMergeOutcome.LocalLoss;
       }
@@ -1187,6 +1188,7 @@ export class Simulation {
     remoteHash: bigint,
     remoteEvictions: number,
     remoteLage: number,
+    remoteName: string,
     pushLog: (r: EventRecord) => void,
   ): CrdtMergeOutcome {
     const sid = subjectId(remoteHash, remoteEvictions, SUBJECT_ID_MODULUS);
@@ -1203,9 +1205,11 @@ export class Simulation {
       topicHash: mine.hash,
       details: {
         type: "collision",
+        name: mine.name,
+        remote_name: remoteName,
         local_won: won,
         local_sid: topicSubjectId(mine),
-        remote_hash: remoteHash.toString(16),
+        remote_hash: remoteHash,
         remote_evictions: remoteEvictions,
       },
     });
@@ -1222,7 +1226,7 @@ export class Simulation {
         src: node.nodeId,
         dst: null,
         topicHash: mine.hash,
-        details: { new_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
+        details: { name: mine.name, new_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
       });
       return CrdtMergeOutcome.LocalLoss;
     }
@@ -1308,7 +1312,7 @@ export class Simulation {
       }
       maybeLogGossipXterminated(allowForward);
     } else {
-      const outcome = this.onGossipUnknownTopic(node, hash, evictions, lage, pushLog);
+      const outcome = this.onGossipUnknownTopic(node, hash, evictions, lage, name, pushLog);
       const allowForward = (outcome === CrdtMergeOutcome.Consensus) || (outcome === CrdtMergeOutcome.LocalLoss);
       if (shouldForward && allowForward) {
         this.gossipEpidemicForward(node, srcId, ttl, hash, evictions, lage, name, pushLog);

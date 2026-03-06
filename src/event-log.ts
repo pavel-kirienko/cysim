@@ -40,10 +40,18 @@ export class EventLog {
         nodeId: rec.src,
         topicHash: rec.topicHash,
         details: { ...rec.details, dst: rec.dst },
+        secondaryTopicHash: null,
         receiveIds: [],
         sendId: null,
         historyIndex,
       };
+
+      // For TC events, store the remote topic hash as secondary
+      if (code === "TC") {
+        const rh = rec.details?.remote_hash;
+        if (typeof rh === "bigint") te.secondaryTopicHash = rh;
+      }
+
       this.events.push(te);
 
       // Correlation for send/receive
