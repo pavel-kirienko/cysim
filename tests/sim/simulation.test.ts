@@ -213,6 +213,132 @@ describe("Simulation", () => {
     });
   });
 
+  describe("consensus-forwarding semantics", () => {
+    it("known-topic local-loss suppresses epidemic forwarding", () => {
+      const sim = makeSim(7);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.addNode(2);
+      sim.stepUntil(1);
+
+      const local = sim.addTopicToNode(0, "topic/known-loss", undefined, 0, 0)!;
+      sim.nodes.get(0)!.peers[0] = { nodeId: 2, lastSeenUs: sim.nowUs };
+
+      const events = invokeMsgArrive(sim, {
+        src: 1,
+        dst: 0,
+        topic_hash: local.hash,
+        evictions: 1,
+        lage: 0,
+        name: local.name,
+        ttl: 3,
+        msg_type: "forward",
+        send_time_us: sim.nowUs,
+      });
+
+      expect(
+        events.some(
+          e =>
+            e.event === "conflict" &&
+            (e.details as Record<string, unknown>)["type"] === "divergence" &&
+            (e.details as Record<string, unknown>)["local_won"] === false,
+        ),
+      ).toBe(true);
+      expect(events.some(e => e.event === "forward" && e.src === 0)).toBe(false);
+      expect(events.some(e => e.event === "gossip_xterminated")).toBe(false);
+    });
+
+    it("unknown-topic local-loss still forwards epidemic gossip", () => {
+      const sim = makeSim(9);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.addNode(2);
+      sim.stepUntil(1);
+
+      const sid = 9000;
+      const local = sim.addTopicToNode(0, undefined, sid, 0, 0)!;
+      const remote = sim.addTopicToNode(1, undefined, sid, 0, 6)!;
+      expect(local.hash).not.toBe(remote.hash);
+
+      sim.nodes.get(0)!.peers[0] = { nodeId: 2, lastSeenUs: sim.nowUs };
+      const events = invokeMsgArrive(sim, {
+        src: 1,
+        dst: 0,
+        topic_hash: remote.hash,
+        evictions: remote.evictions,
+        lage: 6,
+        name: remote.name,
+        ttl: 3,
+        msg_type: "forward",
+        send_time_us: sim.nowUs,
+      });
+
+      expect(
+        events.some(
+          e =>
+            e.event === "conflict" &&
+            (e.details as Record<string, unknown>)["type"] === "collision" &&
+            (e.details as Record<string, unknown>)["local_won"] === false,
+        ),
+      ).toBe(true);
+      expect(
+        events.some(e => e.event === "forward" && e.src === 0 && e.dst === 2 && e.topicHash === remote.hash),
+      ).toBe(true);
+    });
+  });
+
+  describe("urgent gossip scheduling", () => {
+    it("re-scheduling an already urgent topic does not perturb FIFO", () => {
+      const sim = makeSim(11);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+
+      const a = sim.addTopicToNode(0, "topic/a", undefined, 0, 0)!;
+      const b = sim.addTopicToNode(0, "topic/b", undefined, 0, 0)!;
+      const node0 = sim.nodes.get(0)!;
+      node0.gossipUrgent.length = 0;
+      node0.gossipQueue.length = 0;
+      node0.gossipNextUs = sim.nowUs + 1_000_000;
+      node0.peers[0] = { nodeId: 1, lastSeenUs: sim.nowUs };
+
+      const out: EventRecord[] = [];
+      (sim as any).scheduleGossipUrgent(node0, a.hash);
+      (sim as any).scheduleGossipUrgent(node0, b.hash);
+      (sim as any).scheduleGossipUrgent(node0, a.hash);
+      (sim as any).gossipPoll(node0, (r: EventRecord) => out.push(r));
+      (sim as any).gossipPoll(node0, (r: EventRecord) => out.push(r));
+
+      const unicasts = out.filter(e => e.event === "unicast" && e.src === 0);
+      expect(unicasts.length).toBe(2);
+      expect(unicasts[0].topicHash).toBe(a.hash);
+      expect(unicasts[1].topicHash).toBe(b.hash);
+    });
+
+    it("own urgent gossips bypass dedup freshness checks", () => {
+      const sim = makeSim(13);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+
+      const topic = sim.addTopicToNode(0, "topic/repair", undefined, 0, 0)!;
+      const node0 = sim.nodes.get(0)!;
+      node0.gossipUrgent.length = 0;
+      node0.gossipQueue.length = 0;
+      node0.gossipNextUs = sim.nowUs + 1_000_000;
+      node0.peers[0] = { nodeId: 1, lastSeenUs: sim.nowUs };
+
+      const out: EventRecord[] = [];
+      (sim as any).scheduleGossipUrgent(node0, topic.hash);
+      (sim as any).gossipPoll(node0, (r: EventRecord) => out.push(r));
+      (sim as any).scheduleGossipUrgent(node0, topic.hash);
+      (sim as any).gossipPoll(node0, (r: EventRecord) => out.push(r));
+
+      const unicasts = out.filter(e => e.event === "unicast" && e.src === 0 && e.topicHash === topic.hash);
+      expect(unicasts.length).toBe(2);
+    });
+  });
+
   describe("snapshot", () => {
     it("returns map with entries per node", () => {
       const sim = makeSim();

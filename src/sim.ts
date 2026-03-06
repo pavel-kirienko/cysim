@@ -19,6 +19,12 @@ const U64_MASK = 0xFFFF_FFFF_FFFF_FFFFn;
 const BIG_BANG = Number.MIN_SAFE_INTEGER;
 const HEAT_DEATH = Number.MAX_SAFE_INTEGER;
 
+enum CrdtMergeOutcome {
+  Consensus = "consensus",
+  LocalWin = "local_win",
+  LocalLoss = "local_loss",
+}
+
 function asU64(x: bigint): bigint {
   return x & U64_MASK;
 }
@@ -832,6 +838,9 @@ export class Simulation {
     if (!topic || isPinned(topic.hash)) {
       return;
     }
+    if (node.gossipUrgent.includes(hash)) {
+      return;
+    }
     this.enlistTail(node.gossipQueue, hash);
     this.enlistHead(node.gossipUrgent, hash);
     this.ensurePollScheduled(node);
@@ -1089,32 +1098,29 @@ export class Simulation {
         const topic = node.topics.get(hash);
         if (topic) {
           const lage = topicLage(topic.tsCreatedUs, this.nowUs);
-          const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
-          const dedup = this.dedupMatchOrLru(node, dhash);
-          if (this.dedupIsFresh(dedup, dhash)) {
-            const blacklist = new Set<number>();
-            let succeeded = false;
-            for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
-              const peer = this.randomPeerExcept(node, blacklist);
-              if (!peer) break;
-              blacklist.add(peer.nodeId);
-              const ok = this.sendUnicast(
-                node,
-                peer.nodeId,
-                topic.hash,
-                topic.evictions,
-                lage,
-                topic.name,
-                GOSSIP_TTL,
-                "unicast",
-                pushLog,
-              );
-              succeeded = succeeded || ok;
-            }
-            if (succeeded) {
-              this.dedupUpdate(dedup, dhash);
-              node.lastUrgentUs = this.nowUs;
-            }
+          const blacklist = new Set<number>();
+          let succeeded = false;
+          for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
+            const peer = this.randomPeerExcept(node, blacklist);
+            if (!peer) break;
+            blacklist.add(peer.nodeId);
+            const ok = this.sendUnicast(
+              node,
+              peer.nodeId,
+              topic.hash,
+              topic.evictions,
+              lage,
+              topic.name,
+              GOSSIP_TTL,
+              "unicast",
+              pushLog,
+            );
+            succeeded = succeeded || ok;
+          }
+          if (succeeded) {
+            const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
+            this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
+            node.lastUrgentUs = this.nowUs;
           }
         }
       }
@@ -1129,12 +1135,12 @@ export class Simulation {
     remoteEvictions: number,
     remoteLage: number,
     pushLog: (r: EventRecord) => void,
-  ): boolean {
+  ): CrdtMergeOutcome {
     const mineLage = topicLage(mine.tsCreatedUs, this.nowUs);
-    let won = false;
+    let out = CrdtMergeOutcome.Consensus;
 
     if (mine.evictions !== remoteEvictions) {
-      won = (mineLage > remoteLage) || ((mineLage === remoteLage) && (mine.evictions > remoteEvictions));
+      const won = (mineLage > remoteLage) || ((mineLage === remoteLage) && (mine.evictions > remoteEvictions));
       pushLog({
         timeUs: this.nowUs,
         event: "conflict",
@@ -1154,6 +1160,7 @@ export class Simulation {
       if (won) {
         this.gossipBegin(node);
         this.scheduleGossipUrgent(node, mine.hash);
+        out = CrdtMergeOutcome.LocalWin;
       } else {
         topicMergeLage(mine, this.nowUs, remoteLage);
         this.topicAllocate(node, mine, remoteEvictions, this.nowUs);
@@ -1165,13 +1172,14 @@ export class Simulation {
           topicHash: mine.hash,
           details: { accepted_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
         });
+        out = CrdtMergeOutcome.LocalLoss;
       }
     } else {
       this.scheduleGossip(node, mine.hash);
     }
 
     topicMergeLage(mine, this.nowUs, remoteLage);
-    return won;
+    return out;
   }
 
   private onGossipUnknownTopic(
@@ -1180,10 +1188,10 @@ export class Simulation {
     remoteEvictions: number,
     remoteLage: number,
     pushLog: (r: EventRecord) => void,
-  ): boolean {
+  ): CrdtMergeOutcome {
     const sid = subjectId(remoteHash, remoteEvictions, SUBJECT_ID_MODULUS);
     const mine = this.findBySubjectId(node, sid, null);
-    if (!mine) return false;
+    if (!mine) return CrdtMergeOutcome.Consensus;
 
     const mineLage = topicLage(mine.tsCreatedUs, this.nowUs);
     const won = leftWins(mineLage, mine.hash, remoteLage, remoteHash);
@@ -1205,6 +1213,7 @@ export class Simulation {
     if (won) {
       this.gossipBegin(node);
       this.scheduleGossipUrgent(node, mine.hash);
+      return CrdtMergeOutcome.LocalWin;
     } else {
       this.topicAllocate(node, mine, mine.evictions + 1, this.nowUs);
       pushLog({
@@ -1215,9 +1224,8 @@ export class Simulation {
         topicHash: mine.hash,
         details: { new_evictions: mine.evictions, new_sid: topicSubjectId(mine) },
       });
+      return CrdtMergeOutcome.LocalLoss;
     }
-
-    return won;
   }
 
   private handleMsgArrive(payload: Record<string, unknown>, pushLog: (r: EventRecord) => void): void {
@@ -1259,9 +1267,9 @@ export class Simulation {
       },
     });
 
-    const maybeLogGossipXterminated = (localWon: boolean): void => {
+    const maybeLogGossipXterminated = (forwardAllowedByOutcome: boolean): void => {
       const epidemicUnicast = msgType === "unicast" || msgType === "forward";
-      if (localWon || shouldForward || !epidemicUnicast) {
+      if (!epidemicUnicast || !forwardAllowedByOutcome || shouldForward) {
         return;
       }
       const ttlDropped = !ttlPositive;
@@ -1284,8 +1292,9 @@ export class Simulation {
 
     const mine = node.topics.get(hash);
     if (mine) {
-      const localWon = this.onGossipKnownTopic(node, mine, evictions, lage, pushLog);
-      if (shouldForward && !localWon) {
+      const outcome = this.onGossipKnownTopic(node, mine, evictions, lage, pushLog);
+      const allowForward = outcome === CrdtMergeOutcome.Consensus;
+      if (shouldForward && allowForward) {
         this.gossipEpidemicForward(
           node,
           srcId,
@@ -1297,13 +1306,14 @@ export class Simulation {
           pushLog,
         );
       }
-      maybeLogGossipXterminated(localWon);
+      maybeLogGossipXterminated(allowForward);
     } else {
-      const localWon = this.onGossipUnknownTopic(node, hash, evictions, lage, pushLog);
-      if (shouldForward && !localWon) {
+      const outcome = this.onGossipUnknownTopic(node, hash, evictions, lage, pushLog);
+      const allowForward = (outcome === CrdtMergeOutcome.Consensus) || (outcome === CrdtMergeOutcome.LocalLoss);
+      if (shouldForward && allowForward) {
         this.gossipEpidemicForward(node, srcId, ttl, hash, evictions, lage, name, pushLog);
       }
-      maybeLogGossipXterminated(localWon);
+      maybeLogGossipXterminated(allowForward);
     }
   }
 
