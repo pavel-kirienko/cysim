@@ -20,6 +20,8 @@ Each node broadcasts a gossip message every N seconds. Every other online node r
 
 - **Immediate epidemic unicast:** The affected entry is also immediately unicast to two randomly chosen peers that the local node knows about. This is similar to Cyclone/HyParView/etc. Such epidemic gossips are forwarded to other nodes subject to deduplication (each node keeps 16 last seen gossips to break cycles early) and TTL (decremented at each forward, used as a last-resort deterministic cycle breaker). If an epidemic message carries information concerning a known topic, it is first validated to ensure it is not obsolete, and amended as necessary (e.g., a CRDT message that is older than the current state is corrected before forwarding).
 
+<img src="static/screenshot.png">
+
 ## Usage
 
 Requires Node.js:
