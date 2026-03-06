@@ -342,7 +342,7 @@ export class UI {
 
   }
 
-  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number): void {
+  updateFrame(timeUs: number, snaps: Map<number, NodeSnapshot>, historySize?: number, maxTimeUs?: number, rewound = false): void {
     // Propagate focus state
     this.renderer.focusedTopicHash = this.focusedTopicHash;
     if (this.timeline) this.timeline.focusedTopicHash = this.focusedTopicHash;
@@ -363,6 +363,13 @@ export class UI {
 
     // Update topic view table
     this.updateTopicView(snaps);
+
+    // Status bar: show rewind warning when paused at a rewound position with no other message
+    if (rewound && !this.playing && !this.focusedTopicHash) {
+      this.statusBar.textContent = "Rewound — resuming playback will erase history after this point";
+    } else if (!this.focusedTopicHash) {
+      this.statusBar.textContent = "";
+    }
 
     // Update per-node blocks
     this.syncOverlays(snaps, timeUs);

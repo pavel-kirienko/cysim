@@ -167,7 +167,8 @@ function renderCurrent(events: EventRecord[] = []): void {
   const snaps = sim.snapshot();
   renderer.render(sim.nowUs, snaps, events);
   const maxTimeUs = historyTimes.length > 0 ? historyTimes[historyTimes.length - 1] : 0;
-  ui.updateFrame(sim.nowUs, snaps, history.length, maxTimeUs);
+  const rewound = historyIndex >= 0 && historyIndex < history.length - 1;
+  ui.updateFrame(sim.nowUs, snaps, history.length, maxTimeUs, rewound);
   const conv = sim.checkConvergenceFromSnaps(snaps);
   timeline.recordConvergence(sim.nowUs, conv);
   timeline.render(sim.nowUs);
