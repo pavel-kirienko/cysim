@@ -70,6 +70,7 @@ export class Timeline {
   private panLastX = 0;
   private panStartX = 0;
   private draggingCursor = false;
+  private dragCursorX: number | null = null; // screen X while dragging cursor
   private hoveredEvents: TimelineEvent[] = [];
   private userHasManuallyScrolled = false;
   private lastCursorX = 0; // cached cursor screen X for hit-testing
@@ -499,6 +500,33 @@ export class Timeline {
   ): void {
     const x = this.timeToX(timeUs);
     this.lastCursorX = x;
+
+    // Shadow cursor: shows unsnapped drag position
+    if (this.dragCursorX !== null && Math.abs(this.dragCursorX - x) > 2) {
+      const sx = this.dragCursorX;
+      if (sx >= GUTTER_W && sx <= W) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(sx, 0);
+        ctx.lineTo(sx, contentH);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,0.3)";
+        ctx.beginPath();
+        ctx.moveTo(sx, contentH);
+        ctx.lineTo(sx - 5, H);
+        ctx.lineTo(sx + 5, H);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
     if (x < GUTTER_W || x > W) return;
 
     // Vertical dashed line
@@ -548,6 +576,7 @@ export class Timeline {
 
     canvas.addEventListener("pointermove", (e) => {
       if (this.draggingCursor) {
+        this.dragCursorX = e.offsetX;
         this.navigateToX(e.offsetX);
       } else if (this.panning) {
         const dx = e.offsetX - this.panLastX;
@@ -568,6 +597,10 @@ export class Timeline {
     canvas.addEventListener("pointerup", (e) => {
       if (this.draggingCursor) {
         this.draggingCursor = false;
+        if (this.dragCursorX !== null) {
+          this.navigateToX(this.dragCursorX);
+          this.dragCursorX = null;
+        }
         canvas.style.cursor = "";
         canvas.releasePointerCapture(e.pointerId);
       } else if (this.panning) {
