@@ -109,22 +109,25 @@ function setupTimelineResize(): void {
   let startY = 0;
   let startH = 0;
 
-  handle.addEventListener("mousedown", (e) => {
+  handle.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     dragging = true;
     startY = e.clientY;
     startH = container.offsetHeight;
+    handle.setPointerCapture(e.pointerId);
   });
 
-  document.addEventListener("mousemove", (e) => {
+  handle.addEventListener("pointermove", (e) => {
     if (!dragging) return;
     const newH = Math.max(100, startH - (e.clientY - startY));
     container.style.height = newH + "px";
     resizeCanvas();
   });
 
-  document.addEventListener("mouseup", () => {
+  handle.addEventListener("pointerup", (e) => {
+    if (!dragging) return;
     dragging = false;
+    handle.releasePointerCapture(e.pointerId);
   });
 }
 
