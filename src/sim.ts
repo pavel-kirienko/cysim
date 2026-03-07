@@ -446,7 +446,7 @@ export class Simulation {
   constructor(net: NetworkConfig, rngSeed = 42) {
     this.net = {
       ...net,
-      periodicUnicastEnabled: net.periodicUnicastEnabled ?? true,
+      periodicUnicastEnabled: net.periodicUnicastEnabled ?? false,
     };
     this.seed = rngSeed;
     this.rng = new Rng(rngSeed);
