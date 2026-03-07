@@ -4,6 +4,8 @@
 
 export const GOSSIP_PERIOD          = 3_000_000;
 export const GOSSIP_TTL             = 16;
+export const GOSSIP_PERIODIC_UNICAST_PERIOD = 1_000_000;
+export const GOSSIP_PERIODIC_UNICAST_TTL    = 2;
 export const GOSSIP_OUTDEGREE       = 2;
 export const GOSSIP_PEER_COUNT      = 8;
 export const GOSSIP_DEDUP_CAP       = 16;

@@ -14,6 +14,7 @@ import { EventLog } from "./event-log.js";
 // Colors for legend
 const C_BROADCAST = "#f1c40f";
 const C_UNICAST   = "#e67e22";
+const C_PERIODIC  = "#1abc9c";
 const C_FORWARD   = "#9b59b6";
 const C_PEER_FRESH = "#27ae60";
 const C_PEER_STALE = "#95a5a6";
@@ -391,6 +392,7 @@ export class UI {
     const legendItems: [string, string, string][] = [
       [C_BROADCAST, "circle", "Broadcast gossip"],
       [C_UNICAST,   "line",   "Unicast epidemic"],
+      [C_PERIODIC,  "line",   "Periodic unicast"],
       [C_FORWARD,   "dash",   "Epidemic forward"],
       [C_PEER_FRESH,"dot",    "Peer (fresh)"],
       [C_PEER_STALE,"dot",    "Peer (stale)"],
@@ -484,6 +486,9 @@ export class UI {
         const config = JSON.parse(this.configTextarea.value);
         if (typeof config.seed !== "number") throw new Error("seed must be a number");
         if (!Array.isArray(config.nodes)) throw new Error("nodes must be an array");
+        if (config.network?.periodic_unicast !== undefined && typeof config.network.periodic_unicast !== "boolean") {
+          throw new Error("network.periodic_unicast must be a boolean");
+        }
         this.onApplyConfig?.(config);
       } catch (e: any) {
         alert("Invalid config: " + e.message);
@@ -888,6 +893,7 @@ export class UI {
       network: {
         delay_us: this.sim.net.delayUs,
         loss_probability: this.sim.net.lossProbability,
+        periodic_unicast: this.sim.net.periodicUnicastEnabled,
       },
       nodes,
     };
@@ -931,6 +937,7 @@ export class UI {
     const curSeed = this.sim.seed >>> 0;
     const curDelay = this.sim.net.delayUs;
     const curLoss = this.sim.net.lossProbability;
+    const curPeriodic = this.sim.net.periodicUnicastEnabled;
     const curNodes = this.sim.nodes.size;
 
     const seedInput = makeField("Seed", String(curSeed), true);
@@ -958,7 +965,7 @@ export class UI {
       ];
       const loss = Math.max(0, Math.min(1, parseFloat(lossInput.value) || curLoss));
       overlay.remove();
-      this.generateConfig(nc, tc, cc, seed, delay, loss);
+      this.generateConfig(nc, tc, cc, seed, delay, loss, curPeriodic);
     });
 
     const cancelBtn = document.createElement("button");
@@ -978,7 +985,7 @@ export class UI {
 
   private generateConfig(
     nodeCount: number, topicCount: number, collidingCount: number,
-    seed: number, delay: [number, number], loss: number,
+    seed: number, delay: [number, number], loss: number, periodicUnicast: boolean,
   ): void {
 
     // Build per-node topic arrays
@@ -1021,6 +1028,7 @@ export class UI {
       network: {
         delay_us: [delay[0], delay[1]],
         loss_probability: loss,
+        periodic_unicast: periodicUnicast,
       },
       nodes: nodes.map(n => n.topics.length > 0 ? { topics: n.topics } : {}),
     };

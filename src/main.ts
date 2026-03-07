@@ -48,6 +48,7 @@ function createSim(seed?: number): Simulation {
   const net: NetworkConfig = {
     delayUs: [1_000, 10_000],
     lossProbability: 0.0,
+    periodicUnicastEnabled: true,
   };
   const s = new Simulation(net, seed);
   for (let i = 0; i < INITIAL_NODES; i++) {
@@ -197,10 +198,19 @@ function navigateTo(index: number): void {
   renderCurrent([], true);
 }
 
-function resetWithConfig(config: { seed: number; network?: { delay_us?: [number, number]; loss_probability?: number }; nodes: { topics?: { name: string; evictions?: number; lage?: number }[] }[] }): void {
+function resetWithConfig(config: {
+  seed: number;
+  network?: {
+    delay_us?: [number, number];
+    loss_probability?: number;
+    periodic_unicast?: boolean;
+  };
+  nodes: { topics?: { name: string; evictions?: number; lage?: number }[] }[];
+}): void {
   const net: NetworkConfig = {
     delayUs: config.network?.delay_us ?? [1_000, 10_000],
     lossProbability: config.network?.loss_probability ?? 0.0,
+    periodicUnicastEnabled: config.network?.periodic_unicast ?? true,
   };
   const s = new Simulation(net, config.seed);
   config.nodes.forEach((n, i) => {

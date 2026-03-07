@@ -8,6 +8,7 @@ import {
 } from "./types.js";
 import {
   GOSSIP_PERIOD, GOSSIP_TTL, GOSSIP_OUTDEGREE,
+  GOSSIP_PERIODIC_UNICAST_PERIOD, GOSSIP_PERIODIC_UNICAST_TTL,
   GOSSIP_PEER_COUNT, GOSSIP_DEDUP_CAP, GOSSIP_DEDUP_TIMEOUT,
   GOSSIP_PEER_STALE, GOSSIP_PEER_ELIGIBLE,
   GOSSIP_PEER_REPLACEMENT_PROBABILITY_RECIPROCAL,
@@ -387,6 +388,7 @@ export function makeNode(nodeId: number): Node {
     peers,
     dedup,
     gossipNextUs: HEAT_DEATH,
+    gossipPeriodicNextUs: HEAT_DEATH,
     gossipPollScheduledUs: HEAT_DEATH,
     gossipPeriodUs: GOSSIP_PERIOD,
     partitionSet: "A",
@@ -442,7 +444,10 @@ export class Simulation {
   pendingEvents: EventRecord[] = [];
 
   constructor(net: NetworkConfig, rngSeed = 42) {
-    this.net = net;
+    this.net = {
+      ...net,
+      periodicUnicastEnabled: net.periodicUnicastEnabled ?? true,
+    };
     this.seed = rngSeed;
     this.rng = new Rng(rngSeed);
   }
@@ -463,6 +468,7 @@ export class Simulation {
         peers: n.peers.map(p => (p ? { ...p } : null)),
         dedup: n.dedup.map(d => ({ ...d })),
         gossipNextUs: n.gossipNextUs,
+        gossipPeriodicNextUs: n.gossipPeriodicNextUs,
         gossipPollScheduledUs: n.gossipPollScheduledUs,
         gossipPeriodUs: n.gossipPeriodUs,
         partitionSet: n.partitionSet,
@@ -503,6 +509,7 @@ export class Simulation {
         peers: n.peers.map(p => (p ? { ...p } : null)),
         dedup: n.dedup.map(d => ({ ...d })),
         gossipNextUs: n.gossipNextUs,
+        gossipPeriodicNextUs: n.gossipPeriodicNextUs,
         gossipPollScheduledUs: n.gossipPollScheduledUs,
         gossipPeriodUs: n.gossipPeriodUs,
         partitionSet: n.partitionSet,
@@ -567,6 +574,7 @@ export class Simulation {
       d.lastSeenUs = BIG_BANG;
     }
     node.gossipNextUs = HEAT_DEATH;
+    node.gossipPeriodicNextUs = HEAT_DEATH;
     node.gossipPollScheduledUs = HEAT_DEATH;
     node.peerReplacementMoratoriumUntil = BIG_BANG;
     node.lastUrgentUs = 0;
@@ -846,24 +854,65 @@ export class Simulation {
     this.ensurePollScheduled(node);
   }
 
+  private hasEligiblePeer(node: Node): boolean {
+    const threshold = this.nowUs - GOSSIP_PEER_ELIGIBLE;
+    for (const p of node.peers) {
+      if (!p) continue;
+      if (p.lastSeenUs < threshold) continue;
+      return true;
+    }
+    return false;
+  }
+
+  private maybeActivatePeriodicUnicast(node: Node): void {
+    if (!this.net.periodicUnicastEnabled) {
+      node.gossipPeriodicNextUs = HEAT_DEATH;
+      return;
+    }
+    if (node.gossipPeriodicNextUs < HEAT_DEATH) {
+      return;
+    }
+    if (!node.online) {
+      return;
+    }
+    if (!this.hasEligiblePeer(node)) {
+      return;
+    }
+    const deviation = Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
+    node.gossipPeriodicNextUs = this.nowUs + this.ditherInt(GOSSIP_PERIODIC_UNICAST_PERIOD, deviation);
+  }
+
   private desiredPollTime(node: Node): number {
     if (!node.online) {
       return HEAT_DEATH;
     }
+
+    let when = HEAT_DEATH;
+
+    if (this.listTail(node.gossipUrgent) !== null) {
+      // Urgent repair gossips go out immediately, even before the first broadcast slot.
+      when = this.nowUs;
+    }
+
     if (node.gossipNextUs <= this.nowUs) {
-      return this.nowUs;
+      when = this.nowUs;
+    } else if (node.gossipNextUs < HEAT_DEATH) {
+      when = Math.min(when, node.gossipNextUs);
     }
-    if (this.listTail(node.gossipUrgent) !== null && node.gossipNextUs > this.nowUs) {
-      // Allow urgent repair gossips to go out immediately, even before the first broadcast slot.
-      return this.nowUs;
+
+    if (this.net.periodicUnicastEnabled) {
+      if (node.gossipPeriodicNextUs <= this.nowUs) {
+        when = this.nowUs;
+      } else if (node.gossipPeriodicNextUs < HEAT_DEATH) {
+        when = Math.min(when, node.gossipPeriodicNextUs);
+      }
     }
-    if (node.gossipNextUs < HEAT_DEATH) {
-      return node.gossipNextUs;
-    }
-    return HEAT_DEATH;
+
+    return when;
   }
 
   private ensurePollScheduled(node: Node): void {
+    this.maybeActivatePeriodicUnicast(node);
     const when = this.desiredPollTime(node);
     if (when >= HEAT_DEATH) return;
     if (node.gossipPollScheduledUs === HEAT_DEATH || when < node.gossipPollScheduledUs) {
@@ -982,6 +1031,19 @@ export class Simulation {
     return this.rng.choice(eligible);
   }
 
+  private randomPeriodicTopic(node: Node): Topic | null {
+    const eligible: Topic[] = [];
+    for (const topic of node.topics.values()) {
+      if (!isPinned(topic.hash)) {
+        eligible.push(topic);
+      }
+    }
+    if (eligible.length === 0) {
+      return null;
+    }
+    return this.rng.choice(eligible);
+  }
+
   private dedupMatchOrLru(node: Node, dhash: bigint): DedupEntry {
     let oldest = node.dedup[0];
     for (const entry of node.dedup) {
@@ -1027,9 +1089,15 @@ export class Simulation {
   }
 
   private gossipPeerUpdate(node: Node, senderId: number, pushLog: (r: EventRecord) => void): void {
+    const postUpdate = (): void => {
+      this.maybeActivatePeriodicUnicast(node);
+      this.ensurePollScheduled(node);
+    };
+
     for (const p of node.peers) {
       if (p && p.nodeId === senderId) {
         p.lastSeenUs = this.nowUs;
+        postUpdate();
         return;
       }
     }
@@ -1050,6 +1118,7 @@ export class Simulation {
       node.peers[oldestIdx] = { nodeId: senderId, lastSeenUs: this.nowUs };
       pushLog({ timeUs: this.nowUs, event: "peer_refresh", src: node.nodeId, dst: null,
         topicHash: 0n, details: { oldPeer: oldNodeId, newPeer: senderId, peerIdx: oldestIdx, reason: "stale" } });
+      postUpdate();
       return;
     }
 
@@ -1065,6 +1134,7 @@ export class Simulation {
       const moratorium = GOSSIP_PERIOD >> 1;
       node.peerReplacementMoratoriumUntil = this.nowUs + this.ditherInt(moratorium, moratorium);
     }
+    postUpdate();
   }
 
   private handleGossipPollEvent(payload: Record<string, unknown>, pushLog: (r: EventRecord) => void): void {
@@ -1078,6 +1148,8 @@ export class Simulation {
   }
 
   private gossipPoll(node: Node, pushLog: (r: EventRecord) => void): void {
+    this.maybeActivatePeriodicUnicast(node);
+
     if (this.nowUs >= node.gossipNextUs) {
       const hash = this.listTail(node.gossipQueue);
       if (hash !== null) {
@@ -1096,38 +1168,63 @@ export class Simulation {
       }
       const deviation = Math.floor(node.gossipPeriodUs / 8);
       node.gossipNextUs = this.nowUs + this.ditherInt(node.gossipPeriodUs, deviation);
-    } else {
-      const hash = this.listTail(node.gossipUrgent);
-      if (hash !== null) {
-        this.gossipBegin(node);
-        this.delist(node.gossipUrgent, hash);
-        const topic = node.topics.get(hash);
-        if (topic) {
-          const lage = topicLage(topic.tsCreatedUs, this.nowUs);
-          const blacklist = new Set<number>();
-          let succeeded = false;
-          for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
-            const peer = this.randomPeerExcept(node, blacklist);
-            if (!peer) break;
-            blacklist.add(peer.nodeId);
-            const ok = this.sendUnicast(
-              node,
-              peer.nodeId,
-              topic.hash,
-              topic.evictions,
-              lage,
-              topic.name,
-              GOSSIP_TTL,
-              "unicast",
-              pushLog,
-            );
-            succeeded = succeeded || ok;
-          }
-          if (succeeded) {
-            const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
-            this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
-            node.lastUrgentUs = this.nowUs;
-          }
+    }
+
+    if (this.net.periodicUnicastEnabled && this.nowUs >= node.gossipPeriodicNextUs) {
+      const topic = this.randomPeriodicTopic(node);
+      const peer = this.randomPeerExcept(node, new Set<number>());
+      if (topic && peer) {
+        const lage = topicLage(topic.tsCreatedUs, this.nowUs);
+        const sent = this.sendUnicast(
+          node,
+          peer.nodeId,
+          topic.hash,
+          topic.evictions,
+          lage,
+          topic.name,
+          GOSSIP_PERIODIC_UNICAST_TTL,
+          "periodic_unicast",
+          pushLog,
+        );
+        if (sent) {
+          const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
+          this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
+        }
+      }
+      const deviation = Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
+      node.gossipPeriodicNextUs = this.nowUs + this.ditherInt(GOSSIP_PERIODIC_UNICAST_PERIOD, deviation);
+    }
+
+    const urgentHash = this.listTail(node.gossipUrgent);
+    if (urgentHash !== null) {
+      this.gossipBegin(node);
+      this.delist(node.gossipUrgent, urgentHash);
+      const topic = node.topics.get(urgentHash);
+      if (topic) {
+        const lage = topicLage(topic.tsCreatedUs, this.nowUs);
+        const blacklist = new Set<number>();
+        let succeeded = false;
+        for (let i = 0; i < GOSSIP_OUTDEGREE; i++) {
+          const peer = this.randomPeerExcept(node, blacklist);
+          if (!peer) break;
+          blacklist.add(peer.nodeId);
+          const ok = this.sendUnicast(
+            node,
+            peer.nodeId,
+            topic.hash,
+            topic.evictions,
+            lage,
+            topic.name,
+            GOSSIP_TTL,
+            "unicast",
+            pushLog,
+          );
+          succeeded = succeeded || ok;
+        }
+        if (succeeded) {
+          const dhash = gossipDedupHash(topic.hash, topic.evictions, lage);
+          this.dedupUpdate(this.dedupMatchOrLru(node, dhash), dhash);
+          node.lastUrgentUs = this.nowUs;
         }
       }
     }
@@ -1278,7 +1375,7 @@ export class Simulation {
     });
 
     const maybeLogGossipXterminated = (forwardAllowedByOutcome: boolean): void => {
-      const epidemicUnicast = msgType === "unicast" || msgType === "forward";
+      const epidemicUnicast = msgType === "unicast" || msgType === "forward" || msgType === "periodic_unicast";
       if (!epidemicUnicast || !forwardAllowedByOutcome || shouldForward) {
         return;
       }
@@ -1365,9 +1462,10 @@ export class Simulation {
     if (!node) return;
     node.online = true;
     node.peerReplacementMoratoriumUntil = BIG_BANG;
+    this.maybeActivatePeriodicUnicast(node);
     // If gossip was already commenced while offline (e.g., topic created before join),
     // schedule polling now that the node is online.
-    if (node.gossipNextUs < HEAT_DEATH) {
+    if (node.gossipNextUs < HEAT_DEATH || node.gossipPeriodicNextUs < HEAT_DEATH) {
       this.ensurePollScheduled(node);
     }
     pushLog({

@@ -8,6 +8,7 @@ export function mapCode(rec: EventRecord): TimelineCode {
   switch (rec.event) {
     case "broadcast": return "GB";
     case "unicast":   return "GU";
+    case "periodic_unicast": return "GP";
     case "forward":   return "GF";
     case "received":  return "GR";
     case "gossip_xterminated": return "GX";
@@ -62,7 +63,7 @@ export class EventLog {
       this.byId.set(te.id, te);
 
       // Correlation for send/receive
-      if (code === "GB" || code === "GU" || code === "GF") {
+      if (code === "GB" || code === "GU" || code === "GP" || code === "GF") {
         const key = `${rec.src}:${rec.topicHash}:${rec.timeUs}`;
         this.pendingSends.set(key, te.id);
       } else if (code === "GR") {

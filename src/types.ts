@@ -5,6 +5,7 @@
 export interface NetworkConfig {
   delayUs: [number, number]; // [min, max]
   lossProbability: number;
+  periodicUnicastEnabled: boolean;
 }
 
 export interface Topic {
@@ -35,6 +36,7 @@ export interface Node {
   peers: (GossipPeer | null)[];
   dedup: DedupEntry[];
   gossipNextUs: number;
+  gossipPeriodicNextUs: number;
   gossipPollScheduledUs: number;
   gossipPeriodUs: number;
   partitionSet: "A" | "B";
@@ -84,7 +86,7 @@ export interface NodeSnapshot {
 // Timeline types
 // ---------------------------------------------------------------------------
 
-export type TimelineCode = "GB"|"GU"|"GF"|"GR"|"GX"|"TN"|"TC"|"TD"|"TX"|"NN"|"NX"|"CR"|"PR";
+export type TimelineCode = "GB"|"GU"|"GP"|"GF"|"GR"|"GX"|"TN"|"TC"|"TD"|"TX"|"NN"|"NX"|"CR"|"PR";
 
 export interface TimelineEvent {
   id: number;

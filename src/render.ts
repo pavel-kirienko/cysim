@@ -14,6 +14,7 @@ import { Viewport } from "./viewport.js";
 const C_BG          = "#000000";
 const C_BROADCAST   = "#f1c40f"; // yellow expanding circle
 const C_UNICAST     = "#e67e22";
+const C_PERIODIC    = "#1abc9c";
 const C_FORWARD     = "#9b59b6";
 
 const BOX_WIDTH     = 320;
@@ -102,7 +103,7 @@ export class Renderer {
     for (const ev of eventLog.events) {
       if (ev.timeUs > currentTimeUs) continue;
 
-      if (ev.code === "GU" || ev.code === "GF") {
+      if (ev.code === "GU" || ev.code === "GP" || ev.code === "GF") {
         const delayUs = (ev.details.delayUs as number) || 0;
         if (delayUs <= 0) continue;
         const dst = ev.details.dst as number;
@@ -113,7 +114,7 @@ export class Renderer {
 
         const rec: EventRecord = {
           timeUs: ev.timeUs,
-          event: ev.code === "GU" ? "unicast" : "forward",
+          event: ev.code === "GU" ? "unicast" : (ev.code === "GP" ? "periodic_unicast" : "forward"),
           src: ev.nodeId,
           dst,
           topicHash: ev.topicHash,
@@ -189,7 +190,7 @@ export class Renderer {
           src: ev.src,
           event: ev,
         });
-      } else if (ev.event === "unicast" || ev.event === "forward") {
+      } else if (ev.event === "unicast" || ev.event === "periodic_unicast" || ev.event === "forward") {
         const delayUs = (ev.details?.delayUs as number) || 500_000;
         this.activeArrows.push({
           startUs: timeUs,
@@ -339,6 +340,8 @@ export class Renderer {
       let color: string, lineWidth: number, dashed: boolean;
       if (ev.event === "unicast") {
         color = C_UNICAST; lineWidth = 2.0; dashed = false;
+      } else if (ev.event === "periodic_unicast") {
+        color = C_PERIODIC; lineWidth = 2.0; dashed = false;
       } else {
         color = C_FORWARD; lineWidth = 1.5; dashed = true;
       }
@@ -629,7 +632,9 @@ export class Renderer {
   private formatArrow(msg: ActiveArrow): string {
     const ev = msg.event;
     const d = ev.details || {};
-    const type = ev.event === "unicast" ? "Unicast" : "Forward";
+    const type =
+      ev.event === "unicast" ? "Unicast" :
+      (ev.event === "periodic_unicast" ? "Periodic Unicast" : "Forward");
     const delayMs = ((d.delayUs as number) || 0) / 1000;
     const lines = [`${type}  Node${ev.src} → Node${ev.dst}`];
     if (d.name) lines.push(`Topic: ${d.name}`);

@@ -10,6 +10,7 @@ describe("mapCode", () => {
   it("maps all event types correctly", () => {
     expect(mapCode(rec("broadcast"))).toBe("GB");
     expect(mapCode(rec("unicast"))).toBe("GU");
+    expect(mapCode(rec("periodic_unicast"))).toBe("GP");
     expect(mapCode(rec("forward"))).toBe("GF");
     expect(mapCode(rec("received"))).toBe("GR");
     expect(mapCode(rec("gossip_xterminated"))).toBe("GX");
@@ -57,6 +58,23 @@ describe("EventLog.ingest", () => {
     log.ingest([sendRec, recvRec], 0);
     const sendEv = log.events[0];
     const recvEv = log.events[1];
+    expect(recvEv.sendId).toBe(sendEv.id);
+    expect(sendEv.receiveIds).toContain(recvEv.id);
+  });
+
+  it("correlates periodic send and receive events", () => {
+    const log = new EventLog();
+    const sendRec: EventRecord = {
+      timeUs: 1000, event: "periodic_unicast", src: 0, dst: 2, topicHash: 77n, details: {},
+    };
+    const recvRec: EventRecord = {
+      timeUs: 2000, event: "received", src: 2, dst: 0, topicHash: 77n,
+      details: { originSrc: 0, sendTimeUs: 1000 },
+    };
+    log.ingest([sendRec, recvRec], 0);
+    const sendEv = log.events[0];
+    const recvEv = log.events[1];
+    expect(sendEv.code).toBe("GP");
     expect(recvEv.sendId).toBe(sendEv.id);
     expect(sendEv.receiveIds).toContain(recvEv.id);
   });

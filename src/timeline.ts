@@ -8,6 +8,7 @@ import { EventLog } from "./event-log.js";
 const CODE_COLORS: Record<TimelineCode, string> = {
   GB: "#f1c40f",
   GU: "#e67e22",
+  GP: "#1abc9c",
   GF: "#9b59b6",
   GR: "#3498db",
   GX: "#8e44ad",
@@ -24,6 +25,7 @@ const CODE_COLORS: Record<TimelineCode, string> = {
 const CODE_NAMES: Record<TimelineCode, string> = {
   GB: "Gossip Broadcast",
   GU: "Gossip Unicast",
+  GP: "Gossip Periodic",
   GF: "Gossip Forward",
   GR: "Gossip Received",
   GX: "Gossip eXterminated",
@@ -43,7 +45,7 @@ const AXIS_H = 16;
 const MARKER_FONT = "bold 7px monospace";
 const COLOCATED_SPACING = 8; // horizontal pixels between same-timestep markers
 const NET_BIN_US = 100_000; // 0.1s bins for network utilization chart
-const NET_MSG_CODES = new Set<TimelineCode>(["GB", "GU", "GF", "GR"]);
+const NET_MSG_CODES = new Set<TimelineCode>(["GB", "GU", "GP", "GF", "GR"]);
 
 export class Timeline {
   private canvas: HTMLCanvasElement;

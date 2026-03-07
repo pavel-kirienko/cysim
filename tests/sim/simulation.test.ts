@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { Simulation } from "../../src/sim.js";
 import type { EventRecord, NetworkConfig } from "../../src/types.js";
-import { GOSSIP_PERIOD } from "../../src/constants.js";
+import { GOSSIP_PERIOD, GOSSIP_PERIODIC_UNICAST_PERIOD, GOSSIP_PERIODIC_UNICAST_TTL } from "../../src/constants.js";
 
-const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0 };
+const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0, periodicUnicastEnabled: true };
 
 function makeSim(seed = 42): Simulation {
   return new Simulation(NET, seed);
@@ -211,6 +211,27 @@ describe("Simulation", () => {
       });
       expect(events.some(e => e.event === "gossip_xterminated")).toBe(false);
     });
+
+    it("logs GX for periodic unicast dropped due to TTL=0", () => {
+      const sim = makeSim();
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+      const events = invokeMsgArrive(sim, {
+        src: 1,
+        dst: 0,
+        topic_hash: 0x123456789abdn,
+        evictions: 0,
+        lage: 0,
+        name: "topic/p",
+        ttl: 0,
+        msg_type: "periodic_unicast",
+        send_time_us: sim.nowUs,
+      });
+      const gx = events.find(e => e.event === "gossip_xterminated");
+      expect(gx).toBeDefined();
+      expect(gx!.details["drop_reason"]).toBe("ttl");
+    });
   });
 
   describe("consensus-forwarding semantics", () => {
@@ -336,6 +357,120 @@ describe("Simulation", () => {
 
       const unicasts = out.filter(e => e.event === "unicast" && e.src === 0 && e.topicHash === topic.hash);
       expect(unicasts.length).toBe(2);
+    });
+  });
+
+  describe("periodic unicast scheduling", () => {
+    it("activates only when a peer exists and first send is dithered around one second", () => {
+      const sim = makeSim(21);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+
+      const topic = sim.addTopicToNode(0, "topic/p0")!;
+      const node0 = sim.nodes.get(0)!;
+      node0.gossipUrgent.length = 0;
+      node0.gossipPeriodicNextUs = Number.MAX_SAFE_INTEGER;
+      for (let i = 0; i < node0.peers.length; i++) node0.peers[i] = null;
+
+      (sim as any).ensurePollScheduled(node0);
+      expect(node0.gossipPeriodicNextUs).toBe(Number.MAX_SAFE_INTEGER);
+
+      node0.peers[0] = { nodeId: 1, lastSeenUs: sim.nowUs };
+      (sim as any).ensurePollScheduled(node0);
+      const minDelay = GOSSIP_PERIODIC_UNICAST_PERIOD - Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
+      const maxDelay = GOSSIP_PERIODIC_UNICAST_PERIOD + Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
+      expect(node0.gossipPeriodicNextUs).toBeGreaterThanOrEqual(sim.nowUs + minDelay);
+      expect(node0.gossipPeriodicNextUs).toBeLessThanOrEqual(sim.nowUs + maxDelay);
+
+      const before = sim.stepUntil(sim.nowUs + minDelay - 1);
+      expect(before.some(e => e.event === "periodic_unicast" && e.src === 0)).toBe(false);
+
+      const at = sim.stepUntil(sim.nowUs + maxDelay);
+      const periodic = at.find(e => e.event === "periodic_unicast" && e.src === 0);
+      expect(periodic).toBeDefined();
+      expect(periodic!.topicHash).toBe(topic.hash);
+      expect(periodic!.details["ttl"]).toBe(GOSSIP_PERIODIC_UNICAST_TTL);
+    });
+
+    it("does not emit periodic unicasts when disabled in network config", () => {
+      const sim = new Simulation(
+        { delayUs: [1000, 5000], lossProbability: 0, periodicUnicastEnabled: false },
+        24,
+      );
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+
+      const topic = sim.addTopicToNode(0, "topic/no-periodic")!;
+      const node0 = sim.nodes.get(0)!;
+      node0.gossipUrgent.length = 0;
+      node0.gossipNextUs = Number.MAX_SAFE_INTEGER;
+      node0.gossipPeriodicNextUs = sim.nowUs;
+      node0.peers[0] = { nodeId: 1, lastSeenUs: sim.nowUs };
+
+      const out: EventRecord[] = [];
+      (sim as any).gossipPoll(node0, (r: EventRecord) => out.push(r));
+
+      expect(out.some(e => e.event === "periodic_unicast" && e.topicHash === topic.hash)).toBe(false);
+      expect(node0.gossipPeriodicNextUs).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    it("emits periodic unicast with dithered period and TTL=2", () => {
+      const sim = makeSim(22);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+
+      const a = sim.addTopicToNode(0, "topic/p1")!;
+      const b = sim.addTopicToNode(0, "topic/p2")!;
+      const node0 = sim.nodes.get(0)!;
+      node0.gossipUrgent.length = 0;
+      node0.gossipNextUs = Number.MAX_SAFE_INTEGER;
+      node0.gossipPeriodicNextUs = Number.MAX_SAFE_INTEGER;
+      node0.peers[0] = { nodeId: 1, lastSeenUs: sim.nowUs };
+
+      (sim as any).ensurePollScheduled(node0);
+      const startUs = sim.nowUs;
+      const events = sim.stepUntil(startUs + 6 * GOSSIP_PERIODIC_UNICAST_PERIOD);
+      const periodic = events.filter(e => e.event === "periodic_unicast" && e.src === 0);
+
+      expect(periodic.length).toBeGreaterThanOrEqual(5);
+      expect(periodic.every(e => e.dst === 1)).toBe(true);
+      expect(periodic.every(e => e.details["ttl"] === GOSSIP_PERIODIC_UNICAST_TTL)).toBe(true);
+      expect(
+        periodic.every(e => e.topicHash === a.hash || e.topicHash === b.hash),
+      ).toBe(true);
+
+      const minStep = GOSSIP_PERIODIC_UNICAST_PERIOD - Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
+      const maxStep = GOSSIP_PERIODIC_UNICAST_PERIOD + Math.floor(GOSSIP_PERIODIC_UNICAST_PERIOD / 8);
+      for (let i = 1; i < periodic.length; i++) {
+        const dt = periodic[i].timeUs - periodic[i - 1].timeUs;
+        expect(dt).toBeGreaterThanOrEqual(minStep);
+        expect(dt).toBeLessThanOrEqual(maxStep);
+      }
+    });
+
+    it("emits broadcast, periodic, and urgent paths together when all are due", () => {
+      const sim = makeSim(23);
+      sim.addNode(0);
+      sim.addNode(1);
+      sim.stepUntil(1);
+
+      const topic = sim.addTopicToNode(0, "topic/all-due")!;
+      const node0 = sim.nodes.get(0)!;
+      node0.gossipUrgent.length = 0;
+      node0.peers[0] = { nodeId: 1, lastSeenUs: sim.nowUs };
+      (sim as any).scheduleGossipUrgent(node0, topic.hash);
+      node0.gossipNextUs = sim.nowUs;
+      node0.gossipPeriodicNextUs = sim.nowUs;
+
+      const out: EventRecord[] = [];
+      (sim as any).gossipPoll(node0, (r: EventRecord) => out.push(r));
+
+      expect(out.some(e => e.event === "broadcast" && e.src === 0)).toBe(true);
+      expect(out.some(e => e.event === "periodic_unicast" && e.src === 0)).toBe(true);
+      expect(out.some(e => e.event === "unicast" && e.src === 0)).toBe(true);
     });
   });
 

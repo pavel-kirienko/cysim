@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Simulation } from "../../src/sim.js";
 import type { NetworkConfig } from "../../src/types.js";
 
-const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0 };
+const NET: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0, periodicUnicastEnabled: true };
 
 function makeSim(seed = 42, net = NET): Simulation {
   return new Simulation(net, seed);
@@ -184,7 +184,7 @@ describe("simulation integration", () => {
   });
 
   it("packet loss: convergence still reached with longer timeout", () => {
-    const lossyNet: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0.5 };
+    const lossyNet: NetworkConfig = { delayUs: [1000, 5000], lossProbability: 0.5, periodicUnicastEnabled: true };
     const sim = makeSim(42, lossyNet);
     sim.addNode();
     sim.addNode();
