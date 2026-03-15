@@ -17,6 +17,9 @@ const C_SHARD_FALLBACK = "#4dc3ff";
 
 const BOX_WIDTH = 320;
 const LOOPBACK_RADIUS = 72;
+const LOOP_START_ANGLE = -Math.PI * 0.25;
+const LOOP_SWEEP_ANGLE = Math.PI * 1.7;
+const NO_LISTENER_NOTICE_US = 900_000;
 
 interface ActiveArrow {
   startUs: number;
@@ -33,10 +36,33 @@ interface ActiveBroadcast {
   event: EventRecord;
 }
 
+interface ActiveNoListenerNotice {
+  startUs: number;
+  expireUs: number;
+  src: number;
+  event: EventRecord;
+}
+
 function noListenerShardLoopScale(ev: EventRecord): number {
   if (ev.event !== "shard") return 1;
   const listeners = ev.details.listeners;
   return Array.isArray(listeners) && listeners.length === 0 ? 3 : 1;
+}
+
+function loopGeometry(srcX: number, srcY: number, radiusScale: number): { cx: number; cy: number; radius: number } {
+  const scale = Math.max(1, radiusScale);
+  const radius = LOOPBACK_RADIUS * scale;
+  const baseCenterOffset = LOOPBACK_RADIUS * 0.2;
+  const ux = Math.cos(LOOP_START_ANGLE);
+  const uy = Math.sin(LOOP_START_ANGLE);
+  // Keep scaled loops attached to the same node-side start anchor as the base loop.
+  const anchorX = srcX + baseCenterOffset + ux * LOOPBACK_RADIUS;
+  const anchorY = srcY - baseCenterOffset + uy * LOOPBACK_RADIUS;
+  return {
+    cx: anchorX - ux * radius,
+    cy: anchorY - uy * radius,
+    radius,
+  };
 }
 
 export class Renderer {
@@ -53,6 +79,7 @@ export class Renderer {
 
   private activeArrows: ActiveArrow[] = [];
   private activeBroadcasts: ActiveBroadcast[] = [];
+  private activeNoListenerNotices: ActiveNoListenerNotice[] = [];
   private activeConflicts: Map<number, number> = new Map(); // nodeId -> flashUntilUs
   hoveredNodeId: number | null = null;
 
@@ -89,12 +116,14 @@ export class Renderer {
   clearAnimations(): void {
     this.activeArrows = [];
     this.activeBroadcasts = [];
+    this.activeNoListenerNotices = [];
     this.activeConflicts.clear();
   }
 
   rebuildAnimationsFromLog(eventLog: EventLog, currentTimeUs: number): void {
     this.activeArrows = [];
     this.activeBroadcasts = [];
+    this.activeNoListenerNotices = [];
     this.activeConflicts.clear();
 
     for (const ev of eventLog.events) {
@@ -184,17 +213,22 @@ export class Renderer {
     });
   }
 
+  private addNoListenerNotice(ev: EventRecord, startUs: number, currentTimeUs?: number): void {
+    const expireUs = startUs + NO_LISTENER_NOTICE_US;
+    if (currentTimeUs !== undefined && currentTimeUs >= expireUs) return;
+    this.activeNoListenerNotices.push({
+      startUs,
+      expireUs,
+      src: ev.src,
+      event: ev,
+    });
+  }
+
   private expandShardArrows(ev: EventRecord, startUs: number, currentTimeUs?: number): void {
     const listeners = Array.isArray(ev.details.listeners) ? (ev.details.listeners as number[]) : [];
     const delayMap = (ev.details.listenerDelays as Record<string, number> | undefined) ?? {};
     if (listeners.length === 0) {
-      const loopDelayUs = 200_000;
-      const rec: EventRecord = {
-        ...ev,
-        dst: ev.src,
-        details: { ...ev.details, delayUs: loopDelayUs, loopback: true },
-      };
-      this.addArrow(rec, startUs, loopDelayUs, true, currentTimeUs);
+      this.addNoListenerNotice(ev, startUs, currentTimeUs);
       return;
     }
     for (const dst of listeners) {
@@ -245,12 +279,16 @@ export class Renderer {
     }
     this.activeArrows = this.activeArrows.filter((m) => m.expireUs > timeUs);
     this.activeBroadcasts = this.activeBroadcasts.filter((m) => m.expireUs > timeUs);
+    this.activeNoListenerNotices = this.activeNoListenerNotices.filter((m) => m.expireUs > timeUs);
 
     // Draw broadcast circles (behind everything)
     this.drawBroadcasts(ctx, timeUs);
 
     // Draw point-to-point arrows (behind nodes)
     this.drawArrows(ctx, timeUs);
+
+    // Draw no-listener shard gossip popups near source nodes.
+    this.drawNoListenerNotices(ctx, timeUs);
   }
 
   // -- Info box helper --
@@ -492,6 +530,49 @@ export class Renderer {
     }
   }
 
+  private drawNoListenerNotices(ctx: CanvasRenderingContext2D, timeUs: number): void {
+    const stackedByNode = new Map<number, number>();
+    for (const notice of this.activeNoListenerNotices) {
+      const srcPos = this.nodePositions.get(notice.src);
+      if (!srcPos) continue;
+
+      const elapsed = timeUs - notice.startUs;
+      const frac = elapsed / NO_LISTENER_NOTICE_US;
+      let alpha = frac < 0.7 ? 0.9 : Math.max(0.1, 0.9 * (1 - (frac - 0.7) / 0.3));
+
+      const sticky = this.stickyTopicHash;
+      const hover = this.hoverTopicHash;
+      const hasFocus = sticky !== null || hover !== null;
+      const matchesHover = hover !== null && notice.event.topicHash === hover;
+      const matchesSticky = sticky !== null && notice.event.topicHash === sticky;
+      if (hasFocus) {
+        if (matchesHover) {
+          /* full */
+        } else if (matchesSticky) {
+          alpha *= hover !== null ? 0.6 : 1.0;
+        } else {
+          alpha *= hover !== null ? 0.15 : 0.3;
+        }
+      }
+
+      const d = notice.event.details || {};
+      const color = this.shardColor(d.shardIndex as number | undefined);
+      const name = (d.name as string) || "?";
+      const sid = (d.subjectId as number) ?? "?";
+      const ev = (d.evictions as number) ?? "?";
+      const lage = (d.lage as number) ?? "?";
+      const shard = (d.shardIndex as number) ?? "?";
+      const infoLines = [`${name}  S=${sid}`, `ev=${ev} lage=${lage} shard=${shard}`, "listeners=0 (no receivers)"];
+
+      const stackIndex = stackedByNode.get(notice.src) ?? 0;
+      stackedByNode.set(notice.src, stackIndex + 1);
+      const box = this.getBoxSize(notice.src);
+      const x = srcPos.x + box.w / 2 + 10;
+      const y = srcPos.y - 36 - stackIndex * 44;
+      this.drawInfoBox(ctx, x, y, infoLines, color, alpha);
+    }
+  }
+
   private drawLoopArrow(
     cx: number,
     cy: number,
@@ -502,10 +583,9 @@ export class Renderer {
     frac: number,
     radiusScale = 1,
   ): [number, number] {
-    const radius = LOOPBACK_RADIUS * Math.max(1, radiusScale);
-    const centerOffset = LOOPBACK_RADIUS * 0.2;
-    const start = -Math.PI * 0.25;
-    const end = start + Math.PI * 1.7 * frac;
+    const geom = loopGeometry(cx, cy, radiusScale);
+    const start = LOOP_START_ANGLE;
+    const end = start + LOOP_SWEEP_ANGLE * frac;
 
     this.ctx.save();
     this.ctx.globalAlpha = alpha;
@@ -513,11 +593,11 @@ export class Renderer {
     this.ctx.lineWidth = lineWidth;
     this.ctx.setLineDash(dashed ? [6, 4] : []);
     this.ctx.beginPath();
-    this.ctx.arc(cx + centerOffset, cy - centerOffset, radius, start, end);
+    this.ctx.arc(geom.cx, geom.cy, geom.radius, start, end);
     this.ctx.stroke();
 
-    const tx = cx + centerOffset + Math.cos(end) * radius;
-    const ty = cy - centerOffset + Math.sin(end) * radius;
+    const tx = geom.cx + Math.cos(end) * geom.radius;
+    const ty = geom.cy + Math.sin(end) * geom.radius;
     const ux = -Math.sin(end);
     const uy = Math.cos(end);
     const headLen = 8;
@@ -698,11 +778,8 @@ export class Renderer {
       const srcPos = this.nodePositions.get(ev.src);
       if (!srcPos || ev.dst === null) continue;
       if (msg.loopback) {
-        const radius = LOOPBACK_RADIUS * noListenerShardLoopScale(ev);
-        const centerOffset = LOOPBACK_RADIUS * 0.2;
-        const cx = srcPos.x + centerOffset;
-        const cy = srcPos.y - centerOffset;
-        const dist = Math.abs(Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2) - radius);
+        const geom = loopGeometry(srcPos.x, srcPos.y, noListenerShardLoopScale(ev));
+        const dist = Math.abs(Math.sqrt((mx - geom.cx) ** 2 + (my - geom.cy) ** 2) - geom.radius);
         if (dist < threshold) return msg;
         continue;
       }

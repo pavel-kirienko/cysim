@@ -30,6 +30,7 @@
 - Framework: Vitest (`vitest.config.ts` uses Node environment and globals).
 - Test files must match `tests/**/*.test.ts`.
 - Place tests near their domain (simulation, event log, helpers) and keep deterministic seeds where randomness is involved.
+- Run `build.sh` when done editing the code to format & build.
 
 ## Commit & Pull Request Guidelines
 
