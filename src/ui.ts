@@ -8,7 +8,7 @@ import { LAGE_MIN, LAGE_MAX } from "./constants.js";
 import { Renderer } from "./render.js";
 import { Viewport } from "./viewport.js";
 import { NodeBlock, NodeBlockCallbacks } from "./node-block.js";
-import { Timeline } from "./timeline.js";
+import { Timeline, TopicTimelineRow } from "./timeline.js";
 import { EventLog } from "./event-log.js";
 
 // Colors for legend
@@ -126,6 +126,8 @@ function highlightJSON(src: string): string {
 }
 
 export class UI {
+  private static readonly TIMELINE_HINT = "Timeline zoom: Ctrl+wheel";
+
   private sim: Simulation;
   private renderer: Renderer;
   private viewport: Viewport;
@@ -137,7 +139,10 @@ export class UI {
   private topicPanel: HTMLElement;
   private topicCacheKey = "";
   private topicTableCells: Map<string, HTMLTableCellElement> = new Map(); // "hash36:nodeId" -> td
+  private topicTableRows: Map<bigint, HTMLTableRowElement> = new Map();
+  private timelineHoveredTopicHash: bigint | null = null;
   private timeline: Timeline | null = null;
+  private topicTimeline: Timeline | null = null;
 
   // Focus state
   private stickyTopicHash: bigint | null = null;
@@ -182,6 +187,7 @@ export class UI {
     this.overlayContainer = overlayContainer;
     this.topicPanel = topicPanel;
     this.statusBar = document.getElementById("status-bar")!;
+    this.setIdleStatus();
     this.buildTopBar(topBar);
     this.buildSidePanel(sidePanel);
     this.initTopicPanelResize();
@@ -216,11 +222,14 @@ export class UI {
     this.topicCacheKey = "";
     const table = this.topicPanel.querySelector("table");
     if (table) table.remove();
+    this.topicTableRows.clear();
+    this.timelineHoveredTopicHash = null;
     // Clear focus state so stale hashes don't persist into the new sim
     this.stickyTopicHash = null;
     this.hoverTopicHash = null;
     this.focusedTopicName = null;
-    this.statusBar.textContent = "";
+    this.setIdleStatus();
+    this.topicTimeline?.setTopicRows([]);
   }
 
   setEventLog(el: EventLog): void {
@@ -231,8 +240,40 @@ export class UI {
     this.timeline = tl;
   }
 
+  setTopicTimeline(tl: Timeline): void {
+    this.topicTimeline = tl;
+    this.topicTimeline.onTopicRowHover = (hash) => {
+      this.setTimelineHoveredTopicRow(hash);
+    };
+  }
+
   get focusedTopic(): bigint | null {
     return this.hoverTopicHash ?? this.stickyTopicHash;
+  }
+
+  private setIdleStatus(): void {
+    this.statusBar.textContent = UI.TIMELINE_HINT;
+  }
+
+  private refreshTimelineRowHoverHighlight(): void {
+    for (const row of this.topicTableRows.values()) {
+      row.classList.remove("timeline-row-highlight");
+    }
+    if (this.timelineHoveredTopicHash === null) {
+      return;
+    }
+    const row = this.topicTableRows.get(this.timelineHoveredTopicHash);
+    if (row) {
+      row.classList.add("timeline-row-highlight");
+    }
+  }
+
+  private setTimelineHoveredTopicRow(hash: bigint | null): void {
+    if (this.timelineHoveredTopicHash === hash) {
+      return;
+    }
+    this.timelineHoveredTopicHash = hash;
+    this.refreshTimelineRowHoverHighlight();
   }
 
   private updatePlayBtn(): void {
@@ -562,6 +603,10 @@ export class UI {
       this.timeline.stickyTopicHash = this.stickyTopicHash;
       this.timeline.hoverTopicHash = this.hoverTopicHash;
     }
+    if (this.topicTimeline) {
+      this.topicTimeline.stickyTopicHash = this.stickyTopicHash;
+      this.topicTimeline.hoverTopicHash = this.hoverTopicHash;
+    }
 
     // Time display
     this.timeDisplay.textContent = `t = ${(timeUs / 1_000_000).toFixed(3)}s`;
@@ -599,7 +644,7 @@ export class UI {
     if (rewound && !this.playing && !anyFocused) {
       this.statusBar.textContent = "Rewound — resuming playback will erase history after this point";
     } else if (!anyFocused) {
-      this.statusBar.textContent = "";
+      this.setIdleStatus();
     }
 
     // Update per-node blocks
@@ -1143,7 +1188,7 @@ export class UI {
     if (hash === null) {
       if (!this.stickyTopicHash) {
         this.focusedTopicName = null;
-        this.statusBar.textContent = "";
+        this.setIdleStatus();
       }
       return;
     }
@@ -1159,6 +1204,54 @@ export class UI {
     const key = `${hash.toString(36)}:${nid}`;
     const cell = this.topicTableCells.get(key);
     if (cell) cell.classList.add("cell-highlighted");
+  }
+
+  private buildTopicTimelineRows(
+    sortedTopics: [bigint, { name: string; cells: Map<number, TopicSnap> }][],
+    topicConflictHue: Map<bigint, number | null>,
+  ): TopicTimelineRow[] {
+    const rows: TopicTimelineRow[] = [];
+    const seen = new Set<bigint>();
+
+    for (const [hash, row] of sortedTopics) {
+      seen.add(hash);
+      rows.push({
+        hash,
+        name: row.name,
+        conflictHue: topicConflictHue.get(hash) ?? null,
+      });
+    }
+
+    if (!this.eventLog) {
+      return rows;
+    }
+
+    const historical = new Map<bigint, string>();
+    const register = (hash: bigint, name: string | null): void => {
+      if (hash === 0n || seen.has(hash) || historical.has(hash)) {
+        return;
+      }
+      const resolved = name && name.length > 0 ? name : `hash:${hash.toString(16)}`;
+      historical.set(hash, resolved);
+    };
+
+    for (const ev of this.eventLog.events) {
+      const name = typeof ev.details.name === "string" ? ev.details.name : null;
+      register(ev.topicHash, name);
+      if (ev.secondaryTopicHash !== null) {
+        const remoteName = typeof ev.details.remote_name === "string" ? ev.details.remote_name : null;
+        register(ev.secondaryTopicHash, remoteName);
+      }
+    }
+
+    for (const [hash, name] of historical) {
+      rows.push({
+        hash,
+        name,
+        conflictHue: topicConflictHue.get(hash) ?? null,
+      });
+    }
+    return rows;
   }
 
   private updateTopicView(snaps: Map<number, NodeSnapshot>): void {
@@ -1180,15 +1273,21 @@ export class UI {
     }
     nodeIds.sort((a, b) => a - b);
 
-    // 2. Cache key — skip DOM rebuild if unchanged
+    // 2. Cache key for table rebuild decisions.
     let key = "";
-    for (const [hash, row] of matrix) {
-      for (const [nid, t] of row.cells) {
+    for (const nid of nodeIds) {
+      const snap = snaps.get(nid);
+      key += `N${nid}:${snap?.partitionSet ?? "?"},`;
+    }
+    const sortedHashesForKey = [...matrix.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (const hash of sortedHashesForKey) {
+      const row = matrix.get(hash)!;
+      const rowNodeIds = [...row.cells.keys()].sort((a, b) => a - b);
+      for (const nid of rowNodeIds) {
+        const t = row.cells.get(nid)!;
         key += `${hash.toString(36)}:${nid}:${t.evictions}:${t.lage}:${t.subjectId},`;
       }
     }
-    if (key === this.topicCacheKey) return;
-    this.topicCacheKey = key;
 
     // 3. Detect conflicts (partition-aware, mirrors checkConvergenceImpl)
     // Each conflict gets a group ID; cells in the same group share a color hue.
@@ -1308,8 +1407,42 @@ export class UI {
       }
     }
 
+    // Sort topics by earliest sortOrder ascending (oldest on top, newest at bottom).
+    const sortedTopics = [...matrix.entries()].sort((a, b) => {
+      let minA = Infinity;
+      let minB = Infinity;
+      for (const t of a[1].cells.values()) if (t.sortOrder < minA) minA = t.sortOrder;
+      for (const t of b[1].cells.values()) if (t.sortOrder < minB) minB = t.sortOrder;
+      return minA - minB;
+    });
+
+    // Per-topic conflict hue for the topic timeline.
+    const topicConflictHue = new Map<bigint, number | null>();
+    for (const [hash, row] of sortedTopics) {
+      let conflictHue: number | null = null;
+      for (const [nid] of row.cells) {
+        const info = conflictInfo.get(`${hash}:${nid}`);
+        if (info) {
+          conflictHue = groupHues[info.groupId] ?? 0;
+          break;
+        }
+      }
+      topicConflictHue.set(hash, conflictHue);
+    }
+
+    const topicTimelineRows = this.buildTopicTimelineRows(sortedTopics, topicConflictHue);
+    this.topicTimeline?.setTopicRows(topicTimelineRows);
+
+    const cacheUnchanged = key === this.topicCacheKey;
+    this.topicCacheKey = key;
+    if (cacheUnchanged) {
+      this.refreshTimelineRowHoverHighlight();
+      return;
+    }
+
     // 5. Build DOM
     this.topicTableCells.clear();
+    this.topicTableRows.clear();
     const hoverHighlightedCells: HTMLElement[] = [];
     const hoverHighlightedRows: HTMLTableRowElement[] = [];
     const hoverHighlightedColCells: HTMLElement[] = [];
@@ -1345,7 +1478,7 @@ export class UI {
       clearHoverHighlight();
       clearStickyHighlight();
       this.focusedTopicName = null;
-      this.statusBar.textContent = "";
+      this.setIdleStatus();
     };
 
     const highlightNodeAndTopic = (nid: number, hash: bigint | null) => {
@@ -1439,14 +1572,6 @@ export class UI {
     table.appendChild(thead);
 
     const tbody = document.createElement("tbody");
-    // Sort topics by earliest sortOrder ascending (oldest on top, newest at bottom)
-    const sortedTopics = [...matrix.entries()].sort((a, b) => {
-      let minA = Infinity,
-        minB = Infinity;
-      for (const t of a[1].cells.values()) if (t.sortOrder < minA) minA = t.sortOrder;
-      for (const t of b[1].cells.values()) if (t.sortOrder < minB) minB = t.sortOrder;
-      return minA - minB;
-    });
     const applyRowColHighlight = (tr: HTMLTableRowElement, colIdx: number, isSticky: boolean) => {
       const rows = isSticky ? stickyHighlightedRows : hoverHighlightedRows;
       const cols = isSticky ? stickyHighlightedColCells : hoverHighlightedColCells;
@@ -1532,6 +1657,7 @@ export class UI {
 
     for (const [hash, row] of sortedTopics) {
       const tr = document.createElement("tr");
+      this.topicTableRows.set(hash, tr);
 
       // Topic name cell (first col)
       const tdName = document.createElement("td");
@@ -1616,6 +1742,7 @@ export class UI {
     const old = this.topicPanel.querySelector("table");
     if (old) old.remove();
     this.topicPanel.appendChild(table);
+    this.refreshTimelineRowHoverHighlight();
   }
 
   private btn(title: string, label: string): HTMLButtonElement {

@@ -38,7 +38,8 @@ let historyTimes: number[] = [];
 
 // Event log & timeline
 let eventLog: EventLog;
-let timeline: Timeline;
+let nodeTimeline: Timeline;
+let topicTimeline: Timeline;
 
 const SNAPSHOT_INTERVAL_US = 10_000; // 10ms sim time between snapshots
 let lastSnapshotUs = 0;
@@ -90,7 +91,7 @@ function relayout(): void {
   const ids = [...sim.nodes.keys()].sort((a, b) => a - b);
   renderer.layoutNodes(ids);
   sim.setNodePositions(renderer.nodePositions);
-  timeline.setNodeIds(ids);
+  nodeTimeline.setNodeIds(ids);
   zoomToFit();
 }
 
@@ -110,7 +111,8 @@ function resizeCanvas(): void {
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  timeline.resize();
+  topicTimeline.resize();
+  nodeTimeline.resize();
   relayout();
   viewport.applyToWrapper();
 }
@@ -148,8 +150,10 @@ function saveSnapshot(events?: EventRecord[]): void {
   history.push(sim.saveState());
   historyTimes.push(sim.nowUs);
   historyIndex = history.length - 1;
-  timeline.setHistoryTimes(historyTimes);
-  timeline.setCurrentIndex(historyIndex);
+  nodeTimeline.setHistoryTimes(historyTimes);
+  nodeTimeline.setCurrentIndex(historyIndex);
+  topicTimeline.setHistoryTimes(historyTimes);
+  topicTimeline.setCurrentIndex(historyIndex);
 
   if (events && events.length > 0) {
     eventLog.ingest(events, historyIndex);
@@ -163,8 +167,9 @@ function doStep(): boolean {
     history.length = historyIndex + 1;
     historyTimes.length = historyIndex + 1;
     eventLog.truncateAfter(historyIndex);
-    timeline.truncateConvergenceAfter(historyTimes[historyTimes.length - 1] ?? 0);
-    timeline.setHistoryTimes(historyTimes);
+    nodeTimeline.truncateConvergenceAfter(historyTimes[historyTimes.length - 1] ?? 0);
+    nodeTimeline.setHistoryTimes(historyTimes);
+    topicTimeline.setHistoryTimes(historyTimes);
   }
   const newEvents = sim.stepUntil(sim.nowUs + STEP_US);
   if (newEvents.length > 0) {
@@ -192,16 +197,18 @@ function renderCurrent(events: EventRecord[] = [], checkConvergence = false): vo
   ui.updateFrame(sim.nowUs, snaps, history.length, maxTimeUs, rewound);
   if (checkConvergence) {
     const conv = sim.checkConvergenceFromSnaps(snaps);
-    timeline.recordConvergence(sim.nowUs, conv);
+    nodeTimeline.recordConvergence(sim.nowUs, conv);
   }
-  timeline.render(sim.nowUs);
+  topicTimeline.render(sim.nowUs);
+  nodeTimeline.render(sim.nowUs);
 }
 
 function navigateTo(index: number): void {
   if (index < 0 || index >= history.length) return;
   sim.loadState(history[index]);
   historyIndex = index;
-  timeline.setCurrentIndex(historyIndex);
+  nodeTimeline.setCurrentIndex(historyIndex);
+  topicTimeline.setCurrentIndex(historyIndex);
   renderer.rebuildAnimationsFromLog(eventLog, sim.nowUs);
   renderCurrent([], true);
 }
@@ -252,9 +259,12 @@ function resetWithConfig(config: {
   lastSnapshotUs = 0;
   eventLog.clear();
   renderer.clearAnimations();
-  timeline.resetNodeIds();
-  timeline.setHistoryTimes(historyTimes);
-  timeline.setCurrentIndex(-1);
+  nodeTimeline.resetNodeIds();
+  nodeTimeline.setHistoryTimes(historyTimes);
+  nodeTimeline.setCurrentIndex(-1);
+  topicTimeline.resetNodeIds();
+  topicTimeline.setHistoryTimes(historyTimes);
+  topicTimeline.setCurrentIndex(-1);
   relayout();
   renderCurrent();
 }
@@ -288,6 +298,8 @@ function init(): void {
   const sidePanel = document.getElementById("side-panel")!;
   const overlayContainer = document.getElementById("overlay-container")!;
   const worldWrapper = document.getElementById("world-wrapper")!;
+  const topicTimelineCanvas = document.getElementById("topic-timeline-canvas") as HTMLCanvasElement;
+  const topicTimelineTooltip = document.getElementById("topic-timeline-tooltip")!;
   const timelineCanvas = document.getElementById("timeline-canvas") as HTMLCanvasElement;
   const timelineTooltip = document.getElementById("timeline-tooltip")!;
   const canvasContainer = document.getElementById("canvas-container")!;
@@ -299,12 +311,25 @@ function init(): void {
   viewport.attach(canvasContainer);
   renderer = new Renderer(canvas, viewport, simTooltip);
   eventLog = new EventLog();
-  timeline = new Timeline(timelineCanvas, timelineTooltip, eventLog);
+  topicTimeline = new Timeline(topicTimelineCanvas, topicTimelineTooltip, eventLog, { mode: "topic" });
+  nodeTimeline = new Timeline(timelineCanvas, timelineTooltip, eventLog, { mode: "node" });
+  let syncingTimelineView = false;
+  const syncTimeline = (target: Timeline, startUs: number, endUs: number): void => {
+    if (syncingTimelineView) return;
+    syncingTimelineView = true;
+    // Preserve manual-scroll mode across both timelines so paused panning
+    // does not get auto-snapped back to the cursor by the peer timeline.
+    target.setViewRange(startUs, endUs, true, false);
+    syncingTimelineView = false;
+  };
+  nodeTimeline.onViewChanged = (startUs, endUs) => syncTimeline(topicTimeline, startUs, endUs);
+  topicTimeline.onViewChanged = (startUs, endUs) => syncTimeline(nodeTimeline, startUs, endUs);
   const topicPanel = document.getElementById("topic-panel")!;
   ui = new UI(sim, renderer, viewport, topBar, sidePanel, overlayContainer, topicPanel);
 
   ui.setEventLog(eventLog);
-  ui.setTimeline(timeline);
+  ui.setTimeline(nodeTimeline);
+  ui.setTopicTimeline(topicTimeline);
   ui.onRelayout = relayout;
   ui.onApplyConfig = resetWithConfig;
   ui.onFitView = zoomToFit;
@@ -313,8 +338,10 @@ function init(): void {
     saveSnapshot(pendingEvents);
     renderCurrent();
   };
-  timeline.onNavigate = navigateTo;
-  timeline.isPlaying = () => ui.playing;
+  nodeTimeline.onNavigate = navigateTo;
+  nodeTimeline.isPlaying = () => ui.playing;
+  topicTimeline.onNavigate = navigateTo;
+  topicTimeline.isPlaying = () => ui.playing;
 
   resizeCanvas();
   setupTimelineResize();

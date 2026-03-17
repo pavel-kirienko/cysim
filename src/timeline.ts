@@ -48,12 +48,20 @@ const MARKER_FONT = "bold 7px monospace";
 const COLOCATED_SPACING = 8; // horizontal pixels between same-timestep markers
 const NET_BIN_US = 100_000; // 0.1s bins for network utilization chart
 const NET_MSG_CODES = new Set<TimelineCode>(["GB", "GS", "GU", "GP", "GF", "GR"]);
+type TimelineMode = "node" | "topic";
+
+export interface TopicTimelineRow {
+  hash: bigint;
+  name: string;
+  conflictHue: number | null;
+}
 
 export class Timeline {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private tooltip: HTMLElement;
   private eventLog: EventLog;
+  private mode: TimelineMode;
   stickyTopicHash: bigint | null = null;
   hoverTopicHash: bigint | null = null;
 
@@ -70,6 +78,7 @@ export class Timeline {
   private historyTimes: number[] = [];
   private currentHistoryIndex = 0;
   private lastCurrentTimeUs = 0;
+  onViewChanged: ((startUs: number, endUs: number) => void) | null = null;
 
   // Interaction state
   private get logicalW(): number {
@@ -90,16 +99,24 @@ export class Timeline {
   private userHasManuallyScrolled = false;
   private lastCursorX = 0; // cached cursor screen X for hit-testing
   private nodeScrollPx = 0;
+  private topicRows: TopicTimelineRow[] = [];
+  private topicRowIndex = new Map<bigint, number>();
+  private lastHoveredTopicRowHash: bigint | null = null;
+  onTopicRowHover: ((hash: bigint | null) => void) | null = null;
 
-  constructor(canvas: HTMLCanvasElement, tooltip: HTMLElement, eventLog: EventLog) {
+  constructor(canvas: HTMLCanvasElement, tooltip: HTMLElement, eventLog: EventLog, options?: { mode?: TimelineMode }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d")!;
     this.tooltip = tooltip;
     this.eventLog = eventLog;
+    this.mode = options?.mode ?? "node";
     this.setupInteraction();
   }
 
   setNodeIds(ids: number[]): void {
+    if (this.mode !== "node") {
+      return;
+    }
     // Accumulate all ever-seen node IDs, track which are currently active
     this.activeNodeIds = new Set(ids);
     for (const id of ids) {
@@ -112,6 +129,21 @@ export class Timeline {
     this.clampNodeScroll(this.logicalH - AXIS_H);
   }
 
+  setTopicRows(rows: TopicTimelineRow[]): void {
+    if (this.mode !== "topic") {
+      return;
+    }
+    this.topicRows = rows.slice();
+    this.topicRowIndex.clear();
+    for (let i = 0; i < this.topicRows.length; i++) {
+      this.topicRowIndex.set(this.topicRows[i].hash, i);
+    }
+    if (this.lastHoveredTopicRowHash !== null && !this.topicRowIndex.has(this.lastHoveredTopicRowHash)) {
+      this.emitTopicRowHover(null);
+    }
+    this.clampNodeScroll(this.logicalH - AXIS_H);
+  }
+
   resetNodeIds(): void {
     this.nodeIds = [];
     this.nodeRowIndex.clear();
@@ -119,6 +151,48 @@ export class Timeline {
     this.convergenceHistory = [];
     this.colocatedCacheLen = -1;
     this.nodeScrollPx = 0;
+    this.topicRows = [];
+    this.topicRowIndex.clear();
+    this.emitTopicRowHover(null);
+  }
+
+  getViewRange(): { startUs: number; endUs: number } {
+    return { startUs: this.viewStartUs, endUs: this.viewEndUs };
+  }
+
+  setViewRange(startUs: number, endUs: number, markUserScrolled = false, emit = false): void {
+    const minRange = 1_000;
+    const maxRange = 600_000_000;
+    let start = Math.floor(startUs);
+    let end = Math.floor(endUs);
+    let range = end - start;
+    if (range < minRange) {
+      range = minRange;
+    } else if (range > maxRange) {
+      range = maxRange;
+    }
+
+    // Preserve the range when clamping at origin to avoid accidental zooming
+    // while panning right into the zero-time boundary.
+    if (start < 0) {
+      end -= start;
+      start = 0;
+    } else {
+      end = start + range;
+    }
+    if (end - start < minRange) {
+      end = start + minRange;
+    } else if (end - start > maxRange) {
+      end = start + maxRange;
+    }
+    this.viewStartUs = start;
+    this.viewEndUs = end;
+    if (markUserScrolled) {
+      this.userHasManuallyScrolled = true;
+    }
+    if (emit) {
+      this.onViewChanged?.(this.viewStartUs, this.viewEndUs);
+    }
   }
 
   private rebuildNodeRowIndex(): void {
@@ -173,22 +247,19 @@ export class Timeline {
 
   /** Pan the timeline view. dir=1 pans right, dir=-1 pans left. */
   pan(dir: 1 | -1): void {
-    this.userHasManuallyScrolled = true;
     const shift = (this.viewEndUs - this.viewStartUs) * 0.2 * dir;
-    this.viewStartUs += shift;
-    this.viewEndUs += shift;
+    this.setViewRange(this.viewStartUs + shift, this.viewEndUs + shift, true, true);
   }
 
   /** Zoom the timeline view. dir=1 zooms in, dir=-1 zooms out. Centers on cursor. */
   zoom(dir: 1 | -1): void {
-    this.userHasManuallyScrolled = true;
     const range = this.viewEndUs - this.viewStartUs;
     const factor = dir === 1 ? 1 / 1.3 : 1.3;
     const newRange = Math.max(1_000, Math.min(range * factor, 600_000_000));
     const center = this.lastCurrentTimeUs;
     const centerFrac = (center - this.viewStartUs) / range;
-    this.viewStartUs = center - centerFrac * newRange;
-    this.viewEndUs = this.viewStartUs + newRange;
+    const start = center - centerFrac * newRange;
+    this.setViewRange(start, start + newRange, true, true);
   }
 
   resize(): void {
@@ -214,8 +285,11 @@ export class Timeline {
     ctx.fillRect(0, 0, W, H);
 
     const contentH = H - AXIS_H;
-    const nRows = this.nodeIds.length;
+    const nRows = this.scrollableRowCount();
     this.clampNodeScroll(contentH);
+
+    const oldViewStart = this.viewStartUs;
+    const oldViewEnd = this.viewEndUs;
 
     // Auto-scroll: if cursor > 90% of viewport, shift right (only when playing)
     const range = this.viewEndUs - this.viewStartUs;
@@ -244,44 +318,61 @@ export class Timeline {
 
     // Ensure viewStart doesn't go negative
     if (this.viewStartUs < 0) {
-      const range = this.viewEndUs - this.viewStartUs;
+      const adjustedRange = this.viewEndUs - this.viewStartUs;
       this.viewStartUs = 0;
-      this.viewEndUs = range;
+      this.viewEndUs = adjustedRange;
+    }
+    if (oldViewStart !== this.viewStartUs || oldViewEnd !== this.viewEndUs) {
+      this.onViewChanged?.(this.viewStartUs, this.viewEndUs);
     }
 
-    // Net row (row 0): convergence background + msg/s sparkline
-    this.drawNetRow(ctx, W, contentH);
+    if (this.hasNetRow()) {
+      // Net row (row 0): convergence background + msg/s sparkline
+      this.drawNetRow(ctx, W, contentH);
+    }
 
-    // Node ID labels in left gutter (offset by 1 row for convergence)
+    // Row labels
     ctx.font = "bold 10px monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    for (let i = 0; i < nRows; i++) {
-      const y = this.nodeRowCenter(i);
-      if (y < ROW_H || y > contentH) continue;
-      const active = this.activeNodeIds.has(this.nodeIds[i]);
-      ctx.fillStyle = active ? "#fff" : "#555";
-      ctx.fillText(`Node${this.nodeIds[i]}`, GUTTER_W - 4, y);
+    if (this.mode === "node") {
+      for (let i = 0; i < nRows; i++) {
+        const y = this.rowCenter(i);
+        if (y < ROW_H || y > contentH) continue;
+        const active = this.activeNodeIds.has(this.nodeIds[i]);
+        ctx.fillStyle = active ? "#fff" : "#555";
+        ctx.fillText(`Node${this.nodeIds[i]}`, GUTTER_W - 4, y);
+      }
+      ctx.fillStyle = "#fff";
+      ctx.fillText("Net", GUTTER_W - 4, ROW_H / 2);
+    } else {
+      for (let i = 0; i < nRows; i++) {
+        const y = this.rowCenter(i);
+        if (y < 0 || y > contentH) continue;
+        const row = this.topicRows[i];
+        if (!row) continue;
+        const label = row.name.length > 10 ? row.name.slice(0, 10) : row.name;
+        ctx.fillStyle = row.conflictHue === null ? "#ddd" : `hsl(${row.conflictHue}, 80%, 65%)`;
+        ctx.fillText(label, GUTTER_W - 4, y);
+      }
     }
-
-    // Convergence row label
-    ctx.fillStyle = "#fff";
-    ctx.fillText("Net", GUTTER_W - 4, ROW_H / 2);
 
     // Row grid lines
     ctx.strokeStyle = "#333";
     ctx.lineWidth = 0.5;
-    // Pinned net row top and bottom.
-    for (const y of [0, ROW_H]) {
-      ctx.beginPath();
-      ctx.moveTo(GUTTER_W, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
+    if (this.hasNetRow()) {
+      // Pinned net row top and bottom.
+      for (const y of [0, ROW_H]) {
+        ctx.beginPath();
+        ctx.moveTo(GUTTER_W, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+      }
     }
-    // Scrollable node rows.
+    // Scrollable rows.
     for (let i = 0; i <= nRows; i++) {
-      const y = ROW_H + i * ROW_H - this.nodeScrollPx;
-      if (y < ROW_H || y > contentH) continue;
+      const y = this.scrollableRowOffset() + i * ROW_H - this.nodeScrollPx;
+      if (y < this.scrollableRowOffset() || y > contentH) continue;
       ctx.beginPath();
       ctx.moveTo(GUTTER_W, y);
       ctx.lineTo(W, y);
@@ -297,7 +388,24 @@ export class Timeline {
     ctx.rect(GUTTER_W, 0, W - GUTTER_W, contentH);
     ctx.clip();
 
-    // Causal arrows (behind markers)
+    // Topic-mode row conflict highlighting (mirrors table conflict hue mapping).
+    if (this.mode === "topic") {
+      for (let i = 0; i < this.topicRows.length; i++) {
+        const row = this.topicRows[i];
+        const y = this.rowTop(i);
+        if (y + ROW_H < 0 || y > contentH) continue;
+        if (row.conflictHue !== null) {
+          ctx.fillStyle = `hsla(${row.conflictHue}, 65%, 35%, 0.35)`;
+          ctx.fillRect(GUTTER_W, y, W - GUTTER_W, ROW_H);
+        }
+        if (row.hash === this.lastHoveredTopicRowHash) {
+          ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+          ctx.fillRect(GUTTER_W, y, W - GUTTER_W, ROW_H);
+        }
+      }
+    }
+
+    // Causal arrows (behind markers) are meaningful in per-node mode only.
     this.drawCausalArrows(ctx, contentH);
 
     // Event markers
@@ -310,31 +418,37 @@ export class Timeline {
     for (const ev of this.eventLog.events) {
       const x = this.eventX(ev);
       if (x < GUTTER_W - 10 || x > W + 10) continue;
-      const rowIdx = this.nodeRowIndex.get(ev.nodeId) ?? -1;
-      if (rowIdx < 0) continue;
-      const y = this.nodeRowTop(rowIdx);
-      if (y + ROW_H < ROW_H || y > contentH) continue;
+      const rowIndices = this.eventRowIndices(ev);
+      if (rowIndices.length === 0) continue;
 
-      const active = this.activeNodeIds.has(ev.nodeId);
-      let baseAlpha = active ? 1.0 : 0.35;
-      if (hasFocus) {
-        const matchesHover = hover !== null && (ev.topicHash === hover || ev.secondaryTopicHash === hover);
-        const matchesSticky = sticky !== null && (ev.topicHash === sticky || ev.secondaryTopicHash === sticky);
-        if (matchesHover) {
-          /* full */
-        } else if (matchesSticky) {
-          baseAlpha *= hover !== null ? 0.6 : 1.0;
-        } else {
-          baseAlpha *= hover !== null ? 0.15 : 0.3;
+      for (const rowIdx of rowIndices) {
+        const y = this.rowTop(rowIdx);
+        if (y + ROW_H < this.scrollableRowOffset() || y > contentH) continue;
+
+        let baseAlpha = 1.0;
+        if (this.mode === "node") {
+          const active = this.activeNodeIds.has(ev.nodeId);
+          baseAlpha = active ? 1.0 : 0.35;
         }
+        if (hasFocus) {
+          const matchesHover = hover !== null && (ev.topicHash === hover || ev.secondaryTopicHash === hover);
+          const matchesSticky = sticky !== null && (ev.topicHash === sticky || ev.secondaryTopicHash === sticky);
+          if (matchesHover) {
+            /* full */
+          } else if (matchesSticky) {
+            baseAlpha *= hover !== null ? 0.6 : 1.0;
+          } else {
+            baseAlpha *= hover !== null ? 0.15 : 0.3;
+          }
+        }
+        const color = CODE_COLORS[ev.code];
+        ctx.globalAlpha = baseAlpha;
+        ctx.fillStyle = color;
+        const top = ev.code[0];
+        const bot = ev.code[1];
+        ctx.fillText(top, x, y + 2);
+        ctx.fillText(bot, x, y + 10);
       }
-      const color = CODE_COLORS[ev.code];
-      ctx.globalAlpha = baseAlpha;
-      ctx.fillStyle = color;
-      const top = ev.code[0];
-      const bot = ev.code[1];
-      ctx.fillText(top, x, y + 2);
-      ctx.fillText(bot, x, y + 10);
     }
     ctx.globalAlpha = 1.0;
 
@@ -355,10 +469,10 @@ export class Timeline {
     if (this.eventLog.events.length === this.colocatedCacheLen) return;
     this.colocatedCacheLen = this.eventLog.events.length;
     this.colocatedOffsets.clear();
-    // Group events by (nodeId, timeUs) preserving array order
+    // Group events by (row key, timeUs) preserving array order
     const groups = new Map<string, TimelineEvent[]>();
     for (const ev of this.eventLog.events) {
-      const key = `${ev.nodeId}:${ev.timeUs}`;
+      const key = this.colocatedGroupKey(ev);
       let group = groups.get(key);
       if (!group) {
         group = [];
@@ -393,12 +507,24 @@ export class Timeline {
     return this.viewStartUs + frac * (this.viewEndUs - this.viewStartUs);
   }
 
-  private nodeViewportHeight(contentH: number): number {
-    return Math.max(0, contentH - ROW_H); // Net row is pinned at the top.
+  private hasNetRow(): boolean {
+    return this.mode === "node";
+  }
+
+  private scrollableRowOffset(): number {
+    return this.hasNetRow() ? ROW_H : 0;
+  }
+
+  private scrollableRowCount(): number {
+    return this.mode === "topic" ? this.topicRows.length : this.nodeIds.length;
+  }
+
+  private rowViewportHeight(contentH: number): number {
+    return Math.max(0, contentH - this.scrollableRowOffset());
   }
 
   private maxNodeScrollPx(contentH: number): number {
-    return Math.max(0, this.nodeIds.length * ROW_H - this.nodeViewportHeight(contentH));
+    return Math.max(0, this.scrollableRowCount() * ROW_H - this.rowViewportHeight(contentH));
   }
 
   private clampNodeScroll(contentH: number): void {
@@ -420,15 +546,80 @@ export class Timeline {
     this.clampNodeScroll(contentH);
   }
 
-  private nodeRowTop(rowIdx: number): number {
-    return ROW_H + rowIdx * ROW_H - this.nodeScrollPx;
+  private rowTop(rowIdx: number): number {
+    return this.scrollableRowOffset() + rowIdx * ROW_H - this.nodeScrollPx;
   }
 
-  private nodeRowCenter(rowIdx: number): number {
-    return this.nodeRowTop(rowIdx) + ROW_H / 2;
+  private rowCenter(rowIdx: number): number {
+    return this.rowTop(rowIdx) + ROW_H / 2;
+  }
+
+  private rowIndexFromY(y: number): number {
+    const relY = y - this.scrollableRowOffset() + this.nodeScrollPx;
+    if (relY < 0) {
+      return -1;
+    }
+    const out = Math.floor(relY / ROW_H);
+    return out >= 0 && out < this.scrollableRowCount() ? out : -1;
+  }
+
+  private emitTopicRowHover(hash: bigint | null): void {
+    if (this.mode !== "topic") {
+      return;
+    }
+    if (hash === this.lastHoveredTopicRowHash) {
+      return;
+    }
+    this.lastHoveredTopicRowHash = hash;
+    this.onTopicRowHover?.(hash);
+  }
+
+  private updateTopicRowHover(y: number, contentH: number): void {
+    if (this.mode !== "topic") {
+      return;
+    }
+    if (y < 0 || y > contentH) {
+      this.emitTopicRowHover(null);
+      return;
+    }
+    const idx = this.rowIndexFromY(y);
+    if (idx < 0 || idx >= this.topicRows.length) {
+      this.emitTopicRowHover(null);
+      return;
+    }
+    this.emitTopicRowHover(this.topicRows[idx].hash);
+  }
+
+  private eventRowIndices(ev: TimelineEvent): number[] {
+    if (this.mode === "node") {
+      const idx = this.nodeRowIndex.get(ev.nodeId);
+      return idx === undefined ? [] : [idx];
+    }
+    const out: number[] = [];
+    const primary = this.topicRowIndex.get(ev.topicHash);
+    if (primary !== undefined) {
+      out.push(primary);
+    }
+    if (ev.secondaryTopicHash !== null) {
+      const secondary = this.topicRowIndex.get(ev.secondaryTopicHash);
+      if (secondary !== undefined && secondary !== primary) {
+        out.push(secondary);
+      }
+    }
+    return out;
+  }
+
+  private colocatedGroupKey(ev: TimelineEvent): string {
+    if (this.mode === "topic") {
+      return `topic:${ev.topicHash}:${ev.timeUs}`;
+    }
+    return `node:${ev.nodeId}:${ev.timeUs}`;
   }
 
   private drawCausalArrows(ctx: CanvasRenderingContext2D, contentH: number): void {
+    if (this.mode !== "node") {
+      return;
+    }
     const W = this.logicalW;
     const stickyA = this.stickyTopicHash;
     const hoverA = this.hoverTopicHash;
@@ -439,7 +630,7 @@ export class Timeline {
       if (sx > W + 50) continue;
       const sRow = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (sRow < 0) continue;
-      const sy = this.nodeRowCenter(sRow);
+      const sy = this.rowCenter(sRow);
       if (sy < ROW_H || sy > contentH) continue;
 
       let arrowAlpha = 0.5;
@@ -468,7 +659,7 @@ export class Timeline {
         if (rx < GUTTER_W - 50) continue;
         const rRow = this.nodeRowIndex.get(recv.nodeId) ?? -1;
         if (rRow < 0) continue;
-        const ry = this.nodeRowCenter(rRow);
+        const ry = this.rowCenter(rRow);
         if (ry < ROW_H || ry > contentH) continue;
 
         ctx.beginPath();
@@ -732,9 +923,7 @@ export class Timeline {
         if (plotW > 0 && dx !== 0) {
           const range = this.viewEndUs - this.viewStartUs;
           const shift = -(dx / plotW) * range;
-          this.viewStartUs += shift;
-          this.viewEndUs += shift;
-          this.userHasManuallyScrolled = true;
+          this.setViewRange(this.viewStartUs + shift, this.viewEndUs + shift, true, true);
         }
         this.scrollNodesBy(-dy);
         this.panLastX = e.offsetX;
@@ -772,6 +961,7 @@ export class Timeline {
       if (!this.draggingCursor && !this.panning) {
         this.tooltip.style.display = "none";
         this.hoveredEvents = [];
+        this.emitTopicRowHover(null);
       }
     });
 
@@ -788,22 +978,19 @@ export class Timeline {
         const wheelDeltaPx =
           e.deltaMode === 1 ? e.deltaY * ROW_H : e.deltaMode === 2 ? e.deltaY * this.logicalH : e.deltaY;
         if (e.ctrlKey) {
-          this.userHasManuallyScrolled = true;
           const range = this.viewEndUs - this.viewStartUs;
           // Zoom around mouse position.
           const mouseTime = this.xToTime(e.offsetX);
           const factor = wheelDeltaPx > 0 ? 1.15 : 1 / 1.15;
           const newRange = Math.max(1_000, Math.min(range * factor, 600_000_000));
           const mouseFrac = (mouseTime - this.viewStartUs) / range;
-          this.viewStartUs = mouseTime - mouseFrac * newRange;
-          this.viewEndUs = this.viewStartUs + newRange;
+          const newStart = mouseTime - mouseFrac * newRange;
+          this.setViewRange(newStart, newStart + newRange, true, true);
         } else if (e.shiftKey) {
-          this.userHasManuallyScrolled = true;
           const range = this.viewEndUs - this.viewStartUs;
           // Horizontal scroll
           const shift = range * 0.1 * (wheelDeltaPx > 0 ? 1 : -1);
-          this.viewStartUs += shift;
-          this.viewEndUs += shift;
+          this.setViewRange(this.viewStartUs + shift, this.viewEndUs + shift, true, true);
         } else {
           this.scrollNodesBy(wheelDeltaPx);
         }
@@ -874,9 +1061,8 @@ export class Timeline {
           const origRange = tlPinchViewEnd - tlPinchViewStart;
           const newRange = Math.max(1_000, Math.min(origRange * scale, 600_000_000));
 
-          this.viewStartUs = tlPinchMidTime - tlPinchMidFrac * newRange;
-          this.viewEndUs = this.viewStartUs + newRange;
-          this.userHasManuallyScrolled = true;
+          const start = tlPinchMidTime - tlPinchMidFrac * newRange;
+          this.setViewRange(start, start + newRange, true, true);
         } else if (touchPanning && e.touches.length === 1) {
           e.preventDefault();
           const rect = canvas.getBoundingClientRect();
@@ -888,9 +1074,7 @@ export class Timeline {
           if (plotW > 0 && dx !== 0) {
             const range = touchPanViewEnd - touchPanViewStart;
             const shift = -(dx / plotW) * range;
-            this.viewStartUs = touchPanViewStart + shift;
-            this.viewEndUs = touchPanViewEnd + shift;
-            this.userHasManuallyScrolled = true;
+            this.setViewRange(touchPanViewStart + shift, touchPanViewEnd + shift, true, true);
           }
           this.nodeScrollPx = touchPanNodeScroll - dy;
           this.clampNodeScroll(this.logicalH - AXIS_H);
@@ -944,14 +1128,15 @@ export class Timeline {
 
   private handleHover(x: number, y: number): void {
     const contentH = this.logicalH - AXIS_H;
+    this.updateTopicRowHover(y, contentH);
     if (y > contentH || x < GUTTER_W) {
       this.tooltip.style.display = "none";
       this.hoveredEvents = [];
       return;
     }
 
-    // Net row hover: show msg/s
-    if (y < ROW_H) {
+    // Net row hover (node mode only): show msg/s.
+    if (this.hasNetRow() && y < ROW_H) {
       const timeUs = this.xToTime(x);
       const rate = this.getNetMsgRate(timeUs);
       const avg = this.getNetMsgRateAvg(timeUs);
@@ -967,22 +1152,26 @@ export class Timeline {
 
     // Hit-test: collect all events within radius
     const hitRadius = 8;
-    const hits: { ev: TimelineEvent; dist: number }[] = [];
+    const hitsByEvent = new Map<number, { ev: TimelineEvent; dist: number }>();
 
     for (const ev of this.eventLog.events) {
       const ex = this.eventX(ev);
-      const rowIdx = this.nodeRowIndex.get(ev.nodeId) ?? -1;
-      if (rowIdx < 0) continue;
-      const ey = this.nodeRowCenter(rowIdx);
-      if (ey < ROW_H || ey > contentH) continue;
-      const dx = x - ex,
-        dy = y - ey;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < hitRadius) {
-        hits.push({ ev, dist });
+      for (const rowIdx of this.eventRowIndices(ev)) {
+        const ey = this.rowCenter(rowIdx);
+        if (ey < this.scrollableRowOffset() || ey > contentH) continue;
+        const dx = x - ex;
+        const dy = y - ey;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < hitRadius) {
+          const existing = hitsByEvent.get(ev.id);
+          if (!existing || dist < existing.dist) {
+            hitsByEvent.set(ev.id, { ev, dist });
+          }
+        }
       }
     }
 
+    const hits = [...hitsByEvent.values()];
     if (hits.length > 0) {
       hits.sort((a, b) => a.dist - b.dist);
       const evs = hits.map((h) => h.ev);
@@ -992,21 +1181,24 @@ export class Timeline {
         this.showTooltip(evs, x, y);
       }
     } else {
-      // Check arrow hover
+      // Check arrow hover (node mode only)
       const arrowHit = this.hitTestArrow(x, y);
       if (arrowHit) {
         if (this.hoveredEvents.length !== 1 || this.hoveredEvents[0] !== arrowHit) {
           this.hoveredEvents = [arrowHit];
           this.showArrowTooltip(arrowHit, x, y);
         }
-      } else {
-        this.tooltip.style.display = "none";
-        this.hoveredEvents = [];
+        return;
       }
+      this.tooltip.style.display = "none";
+      this.hoveredEvents = [];
     }
   }
 
   private hitTestArrow(x: number, y: number): TimelineEvent | null {
+    if (this.mode !== "node") {
+      return null;
+    }
     const contentH = this.logicalH - AXIS_H;
     const threshold = 6;
     for (const ev of this.eventLog.events) {
@@ -1014,7 +1206,7 @@ export class Timeline {
       const sx = this.eventX(ev);
       const sRow = this.nodeRowIndex.get(ev.nodeId) ?? -1;
       if (sRow < 0) continue;
-      const sy = this.nodeRowCenter(sRow);
+      const sy = this.rowCenter(sRow);
       if (sy < ROW_H || sy > contentH) continue;
 
       for (const rid of ev.receiveIds) {
@@ -1023,7 +1215,7 @@ export class Timeline {
         const rx = this.eventX(recv);
         const rRow = this.nodeRowIndex.get(recv.nodeId) ?? -1;
         if (rRow < 0) continue;
-        const ry = this.nodeRowCenter(rRow);
+        const ry = this.rowCenter(rRow);
         if (ry < ROW_H || ry > contentH) continue;
 
         const dist = this.pointToSegmentDist(x, y, sx, sy, rx, ry);
