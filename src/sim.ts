@@ -13,10 +13,9 @@ import {
   NodeSnapshot,
 } from "./types.js";
 import {
-  DEFAULT_GOSSIP_BROADCAST_FRACTION,
-  DEFAULT_GOSSIP_DITHER,
+  DEFAULT_GOSSIP_BROADCAST_RATIO,
   DEFAULT_GOSSIP_PERIOD,
-  DEFAULT_GOSSIP_STARTUP_DELAY,
+  GOSSIP_PERIOD_DITHER_RATIO,
   DEFAULT_GOSSIP_URGENT_DELAY,
   DEFAULT_SHARD_COUNT,
   SUBJECT_ID_MODULUS,
@@ -500,13 +499,8 @@ export class Simulation {
       protocol: {
         subjectIdModulus,
         shardCount,
-        gossipStartupDelay: Math.max(0, protocol.gossipStartupDelay ?? DEFAULT_GOSSIP_STARTUP_DELAY),
         gossipPeriod: Math.max(0, protocol.gossipPeriod ?? DEFAULT_GOSSIP_PERIOD),
-        gossipDither: Math.max(0, protocol.gossipDither ?? DEFAULT_GOSSIP_DITHER),
-        gossipBroadcastFraction: Math.max(
-          0,
-          Math.min(1, protocol.gossipBroadcastFraction ?? DEFAULT_GOSSIP_BROADCAST_FRACTION),
-        ),
+        gossipBroadcastRatio: Math.max(1, Math.floor(protocol.gossipBroadcastRatio ?? DEFAULT_GOSSIP_BROADCAST_RATIO)),
         gossipUrgentDelay: Math.max(0, protocol.gossipUrgentDelay ?? DEFAULT_GOSSIP_URGENT_DELAY),
       },
     };
@@ -639,6 +633,7 @@ export class Simulation {
     for (const t of node.topics.values()) {
       this.topicAllocate(node, t, 0, this.nowUs);
       this.ensureTopicScheduleEntry(node, t.hash);
+      this.scheduleUrgent(node, t.hash);
     }
 
     node.gossipPollScheduledUs = HEAT_DEATH;
@@ -692,6 +687,7 @@ export class Simulation {
     nodeAddTopic(node, topic);
     this.topicAllocate(node, topic, topic.evictions, this.nowUs);
     this.ensureTopicScheduleEntry(node, topic.hash);
+    this.scheduleUrgent(node, topic.hash);
     this.ensurePollScheduled(node);
 
     this.pendingEvents.push({
@@ -883,23 +879,30 @@ export class Simulation {
     return Math.max(0, Math.round(sampleSec * 1_000_000));
   }
 
-  private durationBetweenSecToUs(low: number, high: number): number {
-    const lo = Math.min(low, high);
-    const hi = Math.max(low, high);
-    const sampleSec = lo === hi ? lo : lo + this.rng.random() * (hi - lo);
-    return Math.max(0, Math.round(sampleSec * 1_000_000));
+  private secToUs(seconds: number): number {
+    return Math.max(0, Math.round(seconds * 1_000_000));
   }
 
-  private periodicIntervalBoundsSec(): [number, number] {
-    const period = this.net.protocol.gossipPeriod;
-    const dither = this.net.protocol.gossipDither;
-    return [Math.max(0, period - dither), period + dither];
+  private randomIntUs(minUs: number, maxUsExclusive: number): number {
+    const lo = Math.max(0, Math.floor(minUs));
+    const hi = Math.max(0, Math.floor(maxUsExclusive));
+    return this.rng.randomInt(lo, hi);
   }
 
-  private heardIntervalBoundsSec(): [number, number] {
-    const period = this.net.protocol.gossipPeriod;
-    const dither = this.net.protocol.gossipDither;
-    return [period + dither, period * 3];
+  private periodicIntervalBoundsUs(gossipCounter: number, suppressed: boolean): [number, number] {
+    const periodUs = this.secToUs(this.net.protocol.gossipPeriod);
+    const ditherUs = Math.floor(periodUs / GOSSIP_PERIOD_DITHER_RATIO);
+
+    if (suppressed) {
+      return [periodUs + ditherUs, periodUs * 3];
+    }
+
+    let delayMinUs = Math.max(0, periodUs - ditherUs);
+    const delayMaxUs = periodUs + ditherUs;
+    if (gossipCounter < this.net.protocol.gossipBroadcastRatio) {
+      delayMinUs = Math.floor(delayMinUs / 16);
+    }
+    return [delayMinUs, delayMaxUs];
   }
 
   private randDelay(): number {
@@ -996,45 +999,42 @@ export class Simulation {
     if (node.topicScheduleByHash.has(hash)) {
       return;
     }
-    const jitter = this.durationBetweenSecToUs(0, this.net.protocol.gossipStartupDelay);
     node.topicScheduleByHash.set(hash, {
-      nextGossipUs: this.nowUs + Math.max(0, jitter),
-      periodicEmissions: 0,
-      firstPeriodicBroadcastPending: true,
+      nextGossipUs: HEAT_DEATH,
+      gossipCounter: 0,
     });
   }
 
-  private scheduleAfterSend(node: Node, hash: bigint): void {
+  private schedulePeriodic(node: Node, hash: bigint, suppressed: boolean): void {
     const state = node.topicScheduleByHash.get(hash);
     if (!state) return;
-    const [low, high] = this.periodicIntervalBoundsSec();
-    state.nextGossipUs = this.nowUs + this.durationBetweenSecToUs(low, high);
+    const [delayMinUs, delayMaxUs] = this.periodicIntervalBoundsUs(state.gossipCounter, suppressed);
+    state.nextGossipUs = this.nowUs + this.randomIntUs(delayMinUs, delayMaxUs);
   }
 
   private scheduleAfterHeard(node: Node, hash: bigint): void {
-    const state = node.topicScheduleByHash.get(hash);
-    if (!state) return;
-    const [low, high] = this.heardIntervalBoundsSec();
-    state.nextGossipUs = this.nowUs + this.durationBetweenSecToUs(low, high);
+    this.schedulePeriodic(node, hash, true);
   }
 
-  private scheduleUrgent(node: Node, hash: bigint, scope: "shard" | "broadcast"): void {
+  private scheduleUrgent(node: Node, hash: bigint): void {
     if (!node.topics.has(hash)) {
       return;
     }
-    const deadlineUs = this.nowUs + this.durationBetweenSecToUs(0, this.net.protocol.gossipUrgentDelay);
+    this.ensureTopicScheduleEntry(node, hash);
+    const period = node.topicScheduleByHash.get(hash);
+    const periodDeadlineUs = period?.nextGossipUs ?? HEAT_DEATH;
+    const sampledUs = this.nowUs + this.randomIntUs(0, this.secToUs(this.net.protocol.gossipUrgentDelay));
+    const deadlineUs = Math.min(sampledUs, periodDeadlineUs);
+
     const existing = node.pendingUrgentByHash.get(hash);
     if (!existing) {
-      node.pendingUrgentByHash.set(hash, { deadlineUs, scope });
+      node.pendingUrgentByHash.set(hash, { deadlineUs });
       this.ensurePollScheduled(node);
       return;
     }
 
     if (deadlineUs < existing.deadlineUs) {
       existing.deadlineUs = deadlineUs;
-    }
-    if (scope === "broadcast") {
-      existing.scope = "broadcast";
     }
     this.ensurePollScheduled(node);
   }
@@ -1059,31 +1059,15 @@ export class Simulation {
     }
   }
 
-  private shouldBroadcastByFraction(periodicEmissions: number): boolean {
-    const fraction = this.net.protocol.gossipBroadcastFraction;
-    if (fraction <= 0) {
-      return false;
-    }
-    if (fraction >= 1) {
-      return true;
-    }
-    const current = Math.floor(periodicEmissions * fraction);
-    const previous = Math.floor((periodicEmissions - 1) * fraction);
-    return current > previous;
-  }
-
   private choosePeriodicScope(node: Node, hash: bigint): "broadcast" | "shard" {
     const state = node.topicScheduleByHash.get(hash);
-    if (!state) {
-      return "broadcast";
+    const counter = state?.gossipCounter ?? 0;
+    const ratio = Math.max(1, this.net.protocol.gossipBroadcastRatio);
+    const broadcast = counter < ratio || counter % ratio === 0;
+    if (state) {
+      state.gossipCounter += 1;
     }
-    state.periodicEmissions += 1;
-    const first = state.firstPeriodicBroadcastPending;
-    state.firstPeriodicBroadcastPending = false;
-    if (first) {
-      return "broadcast";
-    }
-    return this.shouldBroadcastByFraction(state.periodicEmissions) ? "broadcast" : "shard";
+    return broadcast ? "broadcast" : "shard";
   }
 
   private desiredPollTime(node: Node): number {
@@ -1238,20 +1222,18 @@ export class Simulation {
     } else {
       this.sendShard(node, topic.hash, topic.evictions, lage, topic.name, this.shardForTopic(topic.hash), pushLog);
     }
-
-    this.scheduleAfterSend(node, hash);
     return true;
   }
 
   private emitDueUrgent(node: Node, pushLog: (r: EventRecord) => void): void {
-    const due: { hash: bigint; deadlineUs: number; scope: "shard" | "broadcast" }[] = [];
+    const due: { hash: bigint; deadlineUs: number }[] = [];
 
     for (const [hash, pending] of node.pendingUrgentByHash) {
       if (!node.topics.has(hash)) {
         continue;
       }
       if (pending.deadlineUs <= this.nowUs) {
-        due.push({ hash, deadlineUs: pending.deadlineUs, scope: pending.scope });
+        due.push({ hash, deadlineUs: pending.deadlineUs });
       }
     }
 
@@ -1263,7 +1245,12 @@ export class Simulation {
     let sentAny = false;
     for (const item of due) {
       node.pendingUrgentByHash.delete(item.hash);
-      const sent = this.transmitTopicGossip(node, item.hash, item.scope, pushLog);
+      this.schedulePeriodic(node, item.hash, false);
+      const state = node.topicScheduleByHash.get(item.hash);
+      if (state) {
+        state.gossipCounter = 0;
+      }
+      const sent = this.transmitTopicGossip(node, item.hash, "broadcast", pushLog);
       sentAny = sentAny || sent;
     }
 
@@ -1278,6 +1265,7 @@ export class Simulation {
       return;
     }
 
+    this.schedulePeriodic(node, next.hash, false);
     const scope = this.choosePeriodicScope(node, next.hash);
     this.transmitTopicGossip(node, next.hash, scope, pushLog);
   }
@@ -1328,7 +1316,7 @@ export class Simulation {
       });
 
       if (won) {
-        this.scheduleUrgent(node, mine.hash, "shard");
+        this.scheduleUrgent(node, mine.hash);
         out = CrdtMergeOutcome.LocalWin;
       } else {
         topicMergeLage(mine, this.nowUs, remoteLage);
@@ -1385,7 +1373,7 @@ export class Simulation {
     });
 
     if (won) {
-      this.scheduleUrgent(node, mine.hash, "broadcast");
+      this.scheduleUrgent(node, mine.hash);
       return CrdtMergeOutcome.LocalWin;
     }
 
@@ -1490,7 +1478,7 @@ export class Simulation {
       const updated = node.topics.get(hash);
       if (!updated) continue;
       if (updated.evictions !== originalEvictions) {
-        this.scheduleUrgent(node, hash, "broadcast");
+        this.scheduleUrgent(node, hash);
       }
     }
 

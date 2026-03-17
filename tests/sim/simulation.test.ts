@@ -3,11 +3,10 @@ import { Simulation, subjectId } from "../../src/sim.js";
 import type { EventRecord, NetworkConfig } from "../../src/types.js";
 import {
   DEFAULT_SHARD_COUNT,
-  DEFAULT_GOSSIP_STARTUP_DELAY,
   DEFAULT_GOSSIP_PERIOD,
-  DEFAULT_GOSSIP_DITHER,
-  DEFAULT_GOSSIP_BROADCAST_FRACTION,
+  DEFAULT_GOSSIP_BROADCAST_RATIO,
   DEFAULT_GOSSIP_URGENT_DELAY,
+  GOSSIP_PERIOD_DITHER_RATIO,
   SUBJECT_ID_MODULUS,
 } from "../../src/constants.js";
 
@@ -21,10 +20,8 @@ function makeNet(
   const protocol = {
     subjectIdModulus: SUBJECT_ID_MODULUS,
     shardCount: DEFAULT_SHARD_COUNT,
-    gossipStartupDelay: DEFAULT_GOSSIP_STARTUP_DELAY,
     gossipPeriod: DEFAULT_GOSSIP_PERIOD,
-    gossipDither: DEFAULT_GOSSIP_DITHER,
-    gossipBroadcastFraction: DEFAULT_GOSSIP_BROADCAST_FRACTION,
+    gossipBroadcastRatio: DEFAULT_GOSSIP_BROADCAST_RATIO,
     gossipUrgentDelay: DEFAULT_GOSSIP_URGENT_DELAY,
     ...overrides.protocol,
   };
@@ -74,84 +71,92 @@ describe("Simulation", () => {
       expect(events.filter((e) => e.event === "broadcast" || e.event === "shard").length).toBe(0);
     });
 
-    it("first gossip is jittered in [0, startup_delay]", () => {
+    it("topic creation schedules urgent gossip in [0, urgent_delay)", () => {
       const sim = makeSim(
         123,
         makeNet({
-          protocol: { gossipStartupDelay: 1 },
+          protocol: { gossipUrgentDelay: 1 },
         }),
       );
       sim.addNode(0);
       sim.stepUntil(1);
       const t0 = sim.nowUs;
       const topic = sim.addTopicToNode(0, "topic/a")!;
-      const schedule = sim.nodes.get(0)!.topicScheduleByHash.get(topic.hash)!;
-      expect(schedule.nextGossipUs).toBeGreaterThanOrEqual(t0);
-      expect(schedule.nextGossipUs).toBeLessThanOrEqual(t0 + 1_000_000);
+      const pending = sim.nodes.get(0)!.pendingUrgentByHash.get(topic.hash);
+      expect(pending).toBeDefined();
+      expect(pending!.deadlineUs).toBeGreaterThanOrEqual(t0);
+      expect(pending!.deadlineUs).toBeLessThan(t0 + 1_000_000);
     });
 
-    it("first periodic emission is forced broadcast, then shard", () => {
+    it("initial periodic emissions are broadcast before shard cadence begins", () => {
       const sim = makeSim(
         7,
         makeNet({
           protocol: {
-            gossipStartupDelay: 0,
             gossipPeriod: 0.000001,
-            gossipDither: 0,
-            gossipBroadcastFraction: 0.1,
+            gossipBroadcastRatio: 10,
           },
         }),
       );
       sim.addNode(0);
-      sim.addNode(1);
       sim.stepUntil(1);
-      sim.addTopicToNode(0, "topic/x#1")!;
-      sim.addTopicToNode(1, "topic/listener#7c1")!; // same shard as hash=1 with shard_count=1984
+      const topic = sim.addTopicToNode(0, "topic/x#1")!;
+      const node = sim.nodes.get(0)!;
+      node.pendingUrgentByHash.clear();
+      const schedule = node.topicScheduleByHash.get(topic.hash)!;
+      schedule.nextGossipUs = sim.nowUs;
+      schedule.gossipCounter = 0;
+      sim.setPartition(0, "A");
 
-      const events = sim.stepUntil(sim.nowUs + 5);
+      const events = sim.stepUntil(sim.nowUs + 30);
       const sends = events.filter((e) => e.src === 0 && (e.event === "broadcast" || e.event === "shard"));
-      expect(sends.length).toBeGreaterThanOrEqual(2);
+      expect(sends.length).toBeGreaterThanOrEqual(12);
       expect(sends[0].event).toBe("broadcast");
-      expect(sends[1].event).toBe("shard");
+      expect(sends[9].event).toBe("broadcast");
+      expect(sends[10].event).toBe("broadcast");
+      expect(sends[11].event).toBe("shard");
     });
 
-    it("broadcast cadence is every 10th periodic emission", () => {
+    it("broadcast cadence follows counter rule after initial burst", () => {
       const sim = makeSim(
         11,
         makeNet({
           protocol: {
-            gossipStartupDelay: 0,
             gossipPeriod: 0.000001,
-            gossipDither: 0,
-            gossipBroadcastFraction: 0.1,
+            gossipBroadcastRatio: 10,
           },
         }),
       );
       sim.addNode(0);
       sim.stepUntil(1);
-      sim.addTopicToNode(0, "topic/x#2");
+      const topic = sim.addTopicToNode(0, "topic/x#2")!;
+      const node = sim.nodes.get(0)!;
+      node.pendingUrgentByHash.clear();
+      const schedule = node.topicScheduleByHash.get(topic.hash)!;
+      schedule.nextGossipUs = sim.nowUs;
+      schedule.gossipCounter = 0;
+      sim.setPartition(0, "A");
 
-      const events = sim.stepUntil(sim.nowUs + 30);
+      const events = sim.stepUntil(sim.nowUs + 60);
       const sends = events.filter((e) => e.src === 0 && (e.event === "broadcast" || e.event === "shard"));
-      expect(sends.length).toBeGreaterThanOrEqual(20);
+      expect(sends.length).toBeGreaterThanOrEqual(21);
       expect(events.some((e) => e.event === "unicast" || e.event === "forward" || e.event === "periodic_unicast")).toBe(
         false,
       );
       expect(sends[0].event).toBe("broadcast");
       expect(sends[9].event).toBe("broadcast");
-      expect(sends[19].event).toBe("broadcast");
-      expect(sends[1].event).toBe("shard");
-      expect(sends[2].event).toBe("shard");
+      expect(sends[10].event).toBe("broadcast");
+      expect(sends[11].event).toBe("shard");
+      expect(sends[20].event).toBe("broadcast");
     });
 
-    it("known-topic receive applies duplicate suppression [6s,15s]", () => {
+    it("known-topic receive applies duplicate suppression [period+dither, period*3)", () => {
       const sim = makeSim(
         17,
         makeNet({
           protocol: {
-            gossipStartupDelay: 0,
             gossipPeriod: 5,
-            gossipDither: 1,
+            gossipUrgentDelay: 0,
           },
         }),
       );
@@ -163,14 +168,17 @@ describe("Simulation", () => {
 
       // Prevent node 1 from self-sending first; we want it to reschedule on receive.
       sim.nodes.get(1)!.topicScheduleByHash.get(topic.hash)!.nextGossipUs = Number.MAX_SAFE_INTEGER;
+      sim.nodes.get(1)!.pendingUrgentByHash.delete(topic.hash);
 
       const events = sim.stepUntil(sim.nowUs + 10);
       const received = events.find((e) => e.event === "received" && e.src === 1 && e.topicHash === topic.hash);
       expect(received).toBeDefined();
 
       const n1Schedule = sim.nodes.get(1)!.topicScheduleByHash.get(topic.hash)!;
-      expect(n1Schedule.nextGossipUs).toBeGreaterThanOrEqual(received!.timeUs + 6_000_000);
-      expect(n1Schedule.nextGossipUs).toBeLessThanOrEqual(received!.timeUs + 15_000_000);
+      const periodUs = Math.round(sim.net.protocol.gossipPeriod * 1_000_000);
+      const ditherUs = Math.floor(periodUs / GOSSIP_PERIOD_DITHER_RATIO);
+      expect(n1Schedule.nextGossipUs).toBeGreaterThanOrEqual(received!.timeUs + periodUs + ditherUs);
+      expect(n1Schedule.nextGossipUs).toBeLessThan(received!.timeUs + periodUs * 3);
     });
   });
 
@@ -180,9 +188,8 @@ describe("Simulation", () => {
         19,
         makeNet({
           protocol: {
-            gossipStartupDelay: 0,
             gossipPeriod: 0.000001,
-            gossipDither: 0,
+            gossipUrgentDelay: 0,
           },
         }),
       );
@@ -190,8 +197,14 @@ describe("Simulation", () => {
       sim.addNode(1);
       sim.addNode(2);
       sim.stepUntil(1);
-      sim.addTopicToNode(0, "topic/sender#1");
+      const sender = sim.addTopicToNode(0, "topic/sender#1")!;
       sim.addTopicToNode(2, "topic/listener#7c1");
+      const node0 = sim.nodes.get(0)!;
+      node0.pendingUrgentByHash.clear();
+      const schedule = node0.topicScheduleByHash.get(sender.hash)!;
+      schedule.nextGossipUs = sim.nowUs;
+      schedule.gossipCounter = sim.net.protocol.gossipBroadcastRatio + 1;
+      sim.setPartition(0, "A");
 
       const events = sim.stepUntil(sim.nowUs + 5);
       const shard = events.find((e) => e.event === "shard" && e.src === 0);
@@ -204,15 +217,20 @@ describe("Simulation", () => {
         23,
         makeNet({
           protocol: {
-            gossipStartupDelay: 0,
             gossipPeriod: 0.000001,
-            gossipDither: 0,
+            gossipUrgentDelay: 0,
           },
         }),
       );
       sim.addNode(0);
       sim.stepUntil(1);
-      sim.addTopicToNode(0, "topic/sender#3");
+      const sender = sim.addTopicToNode(0, "topic/sender#3")!;
+      const node0 = sim.nodes.get(0)!;
+      node0.pendingUrgentByHash.clear();
+      const schedule = node0.topicScheduleByHash.get(sender.hash)!;
+      schedule.nextGossipUs = sim.nowUs;
+      schedule.gossipCounter = sim.net.protocol.gossipBroadcastRatio + 1;
+      sim.setPartition(0, "A");
 
       const events = sim.stepUntil(sim.nowUs + 5);
       const shard = events.find((e) => e.event === "shard" && e.src === 0);
@@ -222,13 +240,14 @@ describe("Simulation", () => {
   });
 
   describe("urgent repair scheduling", () => {
-    it("known-topic local-win divergence schedules urgent shard gossip", () => {
+    it("known-topic local-win divergence schedules urgent broadcast gossip", () => {
       const sim = makeSim(29);
       sim.addNode(0);
       sim.addNode(1);
       sim.stepUntil(1);
 
       const local = sim.addTopicToNode(0, "topic/divergence", undefined, 3, 6)!;
+      sim.nodes.get(0)!.pendingUrgentByHash.clear();
       const events = invokeMsgArrive(sim, {
         src: 1,
         dst: 0,
@@ -250,9 +269,8 @@ describe("Simulation", () => {
       expect(conflict).toBeDefined();
       const pending = sim.nodes.get(0)!.pendingUrgentByHash.get(local.hash);
       expect(pending).toBeDefined();
-      expect(pending!.scope).toBe("shard");
       expect(pending!.deadlineUs).toBeGreaterThanOrEqual(sim.nowUs);
-      expect(pending!.deadlineUs).toBeLessThanOrEqual(sim.nowUs + Math.round(DEFAULT_GOSSIP_URGENT_DELAY * 1_000_000));
+      expect(pending!.deadlineUs).toBeLessThan(sim.nowUs + Math.round(DEFAULT_GOSSIP_URGENT_DELAY * 1_000_000));
     });
 
     it("unknown-topic local-win collision schedules urgent broadcast gossip", () => {
@@ -265,6 +283,7 @@ describe("Simulation", () => {
       const local = sim.addTopicToNode(0, undefined, sid, 0, 6)!;
       const remote = sim.addTopicToNode(1, undefined, sid, 0, 0)!;
       expect(local.hash).not.toBe(remote.hash);
+      sim.nodes.get(0)!.pendingUrgentByHash.clear();
 
       invokeMsgArrive(sim, {
         src: 1,
@@ -280,7 +299,6 @@ describe("Simulation", () => {
 
       const pending = sim.nodes.get(0)!.pendingUrgentByHash.get(local.hash);
       expect(pending).toBeDefined();
-      expect(pending!.scope).toBe("broadcast");
     });
 
     it("known-topic local-loss with local collision schedules urgent broadcast for displaced local topic", () => {
@@ -292,6 +310,7 @@ describe("Simulation", () => {
       const mine = sim.addTopicToNode(0, "topic/known-loss", undefined, 0, 0)!;
       const collisionSid = subjectId(mine.hash, 1, SUBJECT_ID_MODULUS);
       const localOther = sim.addTopicToNode(0, undefined, collisionSid, 0, 0)!;
+      sim.nodes.get(0)!.pendingUrgentByHash.clear();
 
       invokeMsgArrive(sim, {
         src: 1,
@@ -307,7 +326,6 @@ describe("Simulation", () => {
 
       const pending = sim.nodes.get(0)!.pendingUrgentByHash.get(localOther.hash);
       expect(pending).toBeDefined();
-      expect(pending!.scope).toBe("broadcast");
     });
 
     it("unknown-topic local-loss schedules urgent broadcast gossip", () => {
@@ -320,6 +338,7 @@ describe("Simulation", () => {
       const local = sim.addTopicToNode(0, undefined, sid, 0, 0)!;
       const remote = sim.addTopicToNode(1, undefined, sid, 0, 6)!;
       expect(local.hash).not.toBe(remote.hash);
+      sim.nodes.get(0)!.pendingUrgentByHash.clear();
 
       invokeMsgArrive(sim, {
         src: 1,
@@ -335,7 +354,6 @@ describe("Simulation", () => {
 
       const pending = sim.nodes.get(0)!.pendingUrgentByHash.get(local.hash);
       expect(pending).toBeDefined();
-      expect(pending!.scope).toBe("broadcast");
     });
 
     it("pending urgent is not canceled by stale-lage gossip", () => {
@@ -347,7 +365,6 @@ describe("Simulation", () => {
       const local = sim.addTopicToNode(0, "topic/stale-lage", undefined, 0, 3)!;
       sim.nodes.get(0)!.pendingUrgentByHash.set(local.hash, {
         deadlineUs: sim.nowUs + 10_000,
-        scope: "shard",
       });
 
       invokeMsgArrive(sim, {
@@ -374,7 +391,6 @@ describe("Simulation", () => {
       const local = sim.addTopicToNode(0, "topic/cancel-arb", undefined, 1, 3)!;
       sim.nodes.get(0)!.pendingUrgentByHash.set(local.hash, {
         deadlineUs: sim.nowUs + 10_000,
-        scope: "shard",
       });
 
       // Same lage, higher remote evictions: local loses divergence arbitration, pending is canceled.
@@ -393,7 +409,6 @@ describe("Simulation", () => {
 
       sim.nodes.get(0)!.pendingUrgentByHash.set(local.hash, {
         deadlineUs: sim.nowUs + 10_000,
-        scope: "shard",
       });
 
       // Same lage, lower remote evictions: local wins divergence arbitration, pending is retained.
@@ -421,7 +436,7 @@ describe("Simulation", () => {
       const snap = sim.snapshot().get(0)!;
       expect(snap.shardIds.length).toBe(1);
       expect(snap.nextTopicHash).toBe(topic.hash);
-      expect(snap.pendingUrgentCount).toBe(0);
+      expect(snap.pendingUrgentCount).toBe(1);
     });
 
     it("saveState/loadState round-trips", () => {

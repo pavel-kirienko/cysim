@@ -7,9 +7,7 @@ import { Simulation, SimState } from "./sim.js";
 import {
   LAGE_MIN,
   DEFAULT_SHARD_COUNT,
-  DEFAULT_GOSSIP_STARTUP_DELAY,
-  DEFAULT_GOSSIP_BROADCAST_FRACTION,
-  DEFAULT_GOSSIP_DITHER,
+  DEFAULT_GOSSIP_BROADCAST_RATIO,
   DEFAULT_GOSSIP_PERIOD,
   DEFAULT_GOSSIP_URGENT_DELAY,
   SUBJECT_ID_MODULUS,
@@ -60,10 +58,8 @@ function createSim(seed?: number): Simulation {
     protocol: {
       subjectIdModulus: SUBJECT_ID_MODULUS,
       shardCount: DEFAULT_SHARD_COUNT,
-      gossipStartupDelay: DEFAULT_GOSSIP_STARTUP_DELAY,
       gossipPeriod: DEFAULT_GOSSIP_PERIOD,
-      gossipDither: DEFAULT_GOSSIP_DITHER,
-      gossipBroadcastFraction: DEFAULT_GOSSIP_BROADCAST_FRACTION,
+      gossipBroadcastRatio: DEFAULT_GOSSIP_BROADCAST_RATIO,
       gossipUrgentDelay: DEFAULT_GOSSIP_URGENT_DELAY,
     },
   };
@@ -219,10 +215,8 @@ function resetWithConfig(config: {
   protocol?: {
     subject_id_modulus?: number;
     shard_count?: number;
-    gossip_startup_delay?: number;
     gossip_period?: number;
-    gossip_dither?: number;
-    gossip_broadcast_fraction?: number;
+    gossip_broadcast_ratio?: number;
     gossip_urgent_delay?: number;
   };
   nodes: { topics?: { name: string; evictions?: number; lage?: number }[] }[];
@@ -233,10 +227,8 @@ function resetWithConfig(config: {
     protocol: {
       subjectIdModulus: config.protocol?.subject_id_modulus ?? SUBJECT_ID_MODULUS,
       shardCount: config.protocol?.shard_count ?? DEFAULT_SHARD_COUNT,
-      gossipStartupDelay: config.protocol?.gossip_startup_delay ?? DEFAULT_GOSSIP_STARTUP_DELAY,
       gossipPeriod: config.protocol?.gossip_period ?? DEFAULT_GOSSIP_PERIOD,
-      gossipDither: config.protocol?.gossip_dither ?? DEFAULT_GOSSIP_DITHER,
-      gossipBroadcastFraction: config.protocol?.gossip_broadcast_fraction ?? DEFAULT_GOSSIP_BROADCAST_FRACTION,
+      gossipBroadcastRatio: config.protocol?.gossip_broadcast_ratio ?? DEFAULT_GOSSIP_BROADCAST_RATIO,
       gossipUrgentDelay: config.protocol?.gossip_urgent_delay ?? DEFAULT_GOSSIP_URGENT_DELAY,
     },
   };

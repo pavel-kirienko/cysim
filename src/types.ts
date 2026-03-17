@@ -5,10 +5,8 @@
 export interface ProtocolConfig {
   subjectIdModulus: number;
   shardCount: number;
-  gossipStartupDelay: number;
   gossipPeriod: number;
-  gossipDither: number;
-  gossipBroadcastFraction: number;
+  gossipBroadcastRatio: number;
   gossipUrgentDelay: number;
 }
 
@@ -28,13 +26,11 @@ export interface Topic {
 
 export interface TopicScheduleState {
   nextGossipUs: number;
-  periodicEmissions: number;
-  firstPeriodicBroadcastPending: boolean;
+  gossipCounter: number;
 }
 
 export interface PendingUrgentGossip {
   deadlineUs: number;
-  scope: "shard" | "broadcast";
 }
 
 export interface Node {

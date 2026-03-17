@@ -520,17 +520,11 @@ export class UI {
         if (typeof config.protocol.subject_id_modulus !== "number") {
           throw new Error("protocol.subject_id_modulus must be a number");
         }
-        if (typeof config.protocol.gossip_startup_delay !== "number") {
-          throw new Error("protocol.gossip_startup_delay must be a number");
-        }
         if (typeof config.protocol.gossip_period !== "number") {
           throw new Error("protocol.gossip_period must be a number");
         }
-        if (typeof config.protocol.gossip_dither !== "number") {
-          throw new Error("protocol.gossip_dither must be a number");
-        }
-        if (typeof config.protocol.gossip_broadcast_fraction !== "number") {
-          throw new Error("protocol.gossip_broadcast_fraction must be a number");
+        if (typeof config.protocol.gossip_broadcast_ratio !== "number") {
+          throw new Error("protocol.gossip_broadcast_ratio must be a number");
         }
         if (typeof config.protocol.gossip_urgent_delay !== "number") {
           throw new Error("protocol.gossip_urgent_delay must be a number");
@@ -960,10 +954,8 @@ export class UI {
       protocol: {
         subject_id_modulus: this.sim.net.protocol.subjectIdModulus,
         shard_count: this.sim.net.protocol.shardCount,
-        gossip_startup_delay: this.sim.net.protocol.gossipStartupDelay,
         gossip_period: this.sim.net.protocol.gossipPeriod,
-        gossip_dither: this.sim.net.protocol.gossipDither,
-        gossip_broadcast_fraction: this.sim.net.protocol.gossipBroadcastFraction,
+        gossip_broadcast_ratio: this.sim.net.protocol.gossipBroadcastRatio,
         gossip_urgent_delay: this.sim.net.protocol.gossipUrgentDelay,
       },
       nodes,
@@ -1078,10 +1070,8 @@ export class UI {
     protocol: {
       subjectIdModulus: number;
       shardCount: number;
-      gossipStartupDelay: number;
       gossipPeriod: number;
-      gossipDither: number;
-      gossipBroadcastFraction: number;
+      gossipBroadcastRatio: number;
       gossipUrgentDelay: number;
     },
   ): void {
@@ -1129,10 +1119,8 @@ export class UI {
       protocol: {
         subject_id_modulus: protocol.subjectIdModulus,
         shard_count: protocol.shardCount,
-        gossip_startup_delay: protocol.gossipStartupDelay,
         gossip_period: protocol.gossipPeriod,
-        gossip_dither: protocol.gossipDither,
-        gossip_broadcast_fraction: protocol.gossipBroadcastFraction,
+        gossip_broadcast_ratio: protocol.gossipBroadcastRatio,
         gossip_urgent_delay: protocol.gossipUrgentDelay,
       },
       nodes: nodes.map((n) => (n.topics.length > 0 ? { topics: n.topics } : {})),
